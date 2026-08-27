@@ -25,16 +25,23 @@ readlink -f ~/.local/bin/codex-upstream
 
 ## 프로젝트가 보이지 않는 경우
 
-프로젝트는 Desktop 앱의 프로젝트 정의가 아니라 세션의 작업 디렉터리로 계산됩니다.
+로컬 Desktop 프로젝트는 `~/.codex/.codex-global-state.json`에서 읽습니다. `CODEX_HOME`을 별도로 설정했다면 그 디렉터리 아래의 같은 파일을 사용합니다.
 
 확인할 내용:
 
-1. 해당 폴더에서 Codex 세션을 실제로 만든 적이 있는지 확인합니다.
-2. 세션이 로컬 세션인지 확인합니다.
-3. 과거에 폴더를 이동하거나 이름을 변경하지 않았는지 확인합니다.
+1. Desktop 프로젝트가 로컬 프로젝트인지 확인합니다. 클라우드 ChatGPT 프로젝트는 현재 지원하지 않습니다.
+2. `~/.codex/.codex-global-state.json` 또는 `.bak` 파일이 존재하고 읽을 수 있는지 확인합니다.
+3. 세션이 로컬 세션인지 확인합니다.
 4. `codex resume` 검색어를 모두 지우고 프로젝트 목록을 확인합니다.
 
-Desktop에서 빈 프로젝트만 만든 상태라면 CLI가 그룹화할 세션이 아직 없을 수 있습니다.
+Desktop에서 세션이나 폴더 없이 만든 빈 로컬 프로젝트도 0 sessions로 보여야 합니다. 상태 파일을 사용할 수 없으면 세션의 `cwd` 그룹만 표시됩니다.
+
+## 한 프로젝트의 세션이 나뉘어 보이는 경우
+
+- Desktop에서 명시적으로 프로젝트에 연결한 세션은 `cwd`가 서로 달라도 프로젝트 ID로 함께 표시됩니다.
+- CLI에서 새로 만든 세션은 `cwd`가 한 프로젝트의 루트와 정확히 일치할 때 그 프로젝트로 추론됩니다.
+- 같은 폴더를 여러 Desktop 프로젝트가 공유하면 잘못 묶지 않기 위해 추론하지 않고 `cwd` 폴백 그룹으로 표시합니다.
+- 프로젝트의 하위 폴더에서 별도로 시작한 세션은 루트와 정확히 같지 않으므로 `cwd` 폴백으로 남을 수 있습니다.
 
 ## `＋ 새 대화 시작`이 보이지 않는 경우
 
@@ -46,6 +53,8 @@ Desktop에서 빈 프로젝트만 만든 상태라면 CLI가 그룹화할 세션
 - 검색어가 비어 있음
 
 보관 세션, 원격 워크스페이스, 검색 중인 목록, fork 선택기에서는 표시하지 않습니다.
+
+Desktop 프로젝트에 폴더가 하나도 없을 때도 표시하지 않습니다. CLI에는 새 세션을 시작할 작업 디렉터리가 필요하므로 Desktop에서 폴더를 연결한 뒤 다시 실행하세요.
 
 ## 업데이트 후 공식 목록으로 돌아간 경우
 
@@ -69,9 +78,12 @@ test -x "$root/bin/codex-code-mode-host" && echo 'host: OK'
 test -x "$root/codex-path/rg" && echo 'rg: OK'
 test -x "$root/codex-resources/bwrap" && echo 'bwrap: OK'
 test -f "$root/codex-package.json" && echo 'manifest: OK'
+test -f "$root/project-browser-patch.sha256" && echo 'patch marker: OK'
 ```
 
 필수 파일이 빠지면 다음 `codex` 실행에서 관리자가 복구를 시도합니다.
+
+패치 파일이 갱신됐는데 Codex 버전이 그대로여도 패치 마커가 다르면 자동으로 다시 빌드합니다.
 
 ## `OSError: [Errno 25] Inappropriate ioctl for device`
 

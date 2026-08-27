@@ -9,6 +9,8 @@
 - 사용자는 계속 `codex resume`를 실행합니다.
 - 키보드 처리, 화면 렌더링, 세션 로딩은 기존 Codex TUI 구조를 사용합니다.
 - 프로젝트 목록과 세션 목록은 같은 선택기 상태 안에서 전환됩니다.
+- Desktop 프로젝트 메타데이터는 읽기 전용 보조 인덱스로만 사용합니다.
+- Desktop 상태를 사용할 수 없으면 원래 세션 메타데이터인 `cwd`로 폴백합니다.
 - 공식 실행 파일과 런타임은 항상 보존해 실패 시 복귀할 수 있게 합니다.
 - 커스텀 바이너리만 단독으로 설치하지 않고 같은 버전의 전체 공식 런타임과 함께 조립합니다.
 
@@ -51,24 +53,36 @@
 1. npm 패키지에서 현재 버전과 플랫폼 런타임을 찾습니다.
 2. `codex-code-mode-host`, `rg`, `bwrap`을 검사합니다.
 3. 공식 런타임을 `packages/<version>`에 복사합니다.
-4. 패치 SHA-256과 worktree에 기록된 SHA-256을 비교합니다.
+4. 패치 SHA-256을 worktree와 설치된 패키지의 SHA-256 기록과 비교합니다.
 5. 새 버전 또는 새 패치이면 공식 `rust-v<version>` 태그로 worktree를 만듭니다.
 6. `git apply --check` 후 패치를 적용합니다.
 7. 공유 Cargo target 디렉터리에서 `codex-cli` 릴리스를 빌드합니다.
 8. 빌드한 바이너리를 같은 버전의 공식 런타임에 설치합니다.
-9. `codex-current` 링크와 `current-version`을 갱신합니다.
+9. 설치된 바이너리의 패치 SHA-256을 기록합니다.
+10. `codex-current` 링크와 `current-version`을 갱신합니다.
 
 공유 빌드 캐시는 버전이 올라가도 공통 의존성을 다시 활용하기 위한 구조입니다.
 
 ## Codex 소스 변경 지점
 
-패치는 여섯 파일을 변경하거나 추가합니다.
+패치는 구현·테스트·스냅샷을 포함한 아홉 파일을 변경하거나 추가합니다.
+
+### `codex-rs/tui/src/resume_picker/desktop_projects.rs`
+
+- `CODEX_HOME/.codex-global-state.json`과 백업 파일을 읽습니다.
+- `local-projects`, `project-order`, `thread-project-assignments`만 역직렬화합니다.
+- 프로젝트 ID, 이름, 모든 루트 폴더, 시간, 세션 연결을 메모리 인덱스로 만듭니다.
+- 한 루트가 여러 프로젝트에 연결되면 해당 루트의 자동 추론을 비활성화합니다.
+- 파싱 실패, 누락, 16 MiB 초과 시 빈 인덱스를 반환해 `cwd` 폴백을 유지합니다.
 
 ### `codex-rs/tui/src/resume_picker/project_browser.rs`
 
-- 세션을 `cwd`별로 그룹화합니다.
+- 명시적 Desktop 프로젝트 ID를 가장 먼저 사용합니다.
+- 미연결 세션은 고유한 Desktop 루트와 정확히 일치할 때 프로젝트를 추론합니다.
+- 나머지 세션을 `cwd`별 폴백 프로젝트로 그룹화합니다.
+- 세션이 없거나 폴더가 없는 Desktop 프로젝트도 합성 프로젝트 행으로 만듭니다.
 - 프로젝트 행에 폴더명과 세션 수를 표시합니다.
-- 선택한 프로젝트 경로를 상태로 보관합니다.
+- 선택한 프로젝트 ID와 선택적 주 폴더를 상태로 보관합니다.
 - 프로젝트 내부 목록의 첫 줄에 합성 행인 `＋ 새 대화 시작`을 추가합니다.
 - 합성 프로젝트 행과 실제 세션 행을 구분합니다.
 
@@ -76,7 +90,8 @@
 
 - resume 선택 결과에 `new_session_cwd`를 추가합니다.
 - Enter/Right로 프로젝트 진입, Escape/Left로 복귀하도록 처리합니다.
-- 프로젝트 내부에서는 선택한 `cwd`로 세션을 다시 필터링합니다.
+- Desktop 프로젝트 내부에서는 전체 세션을 로드한 뒤 프로젝트 ID로 필터링해 여러 `cwd`를 보존합니다.
+- `cwd` 폴백 프로젝트 내부에서는 기존처럼 서버의 `cwd` 필터를 사용합니다.
 - 활성 로컬 시작 화면이고 검색어가 없을 때만 새 대화 행을 표시합니다.
 - 포크, 원격, 보관 화면에는 새 대화 행이 영향을 주지 않도록 범위를 제한합니다.
 - 프로젝트 행에서는 archive 단축키가 동작하지 않도록 실제 thread ID를 확인합니다.
@@ -94,33 +109,35 @@
 
 ### 테스트 및 스냅샷
 
-- `project_browser_tests.rs`에서 그룹화, 진입/복귀, 포크 비영향, 새 세션 경로 전달을 검사합니다.
-- TUI 스냅샷은 새 대화 행과 기존 세션이 같은 네이티브 목록에 렌더링되는지 검사합니다.
+- `desktop_projects_tests.rs`에서 상태 파일, 백업, 프로젝트 순서, 연결 종류, 공유 루트 안전성을 검사합니다.
+- `project_browser_tests.rs`에서 ID 그룹화, 다중 폴더, 빈 프로젝트, 루트 추론, 진입/복귀, 포크 비영향, 새 세션 경로 전달을 검사합니다.
+- TUI 스냅샷은 Desktop 프로젝트 개요와 새 대화 행이 기존 네이티브 목록에 렌더링되는지 검사합니다.
 
 ## 데이터 흐름
 
 ```text
+Codex Desktop global state (read-only)
+  ├─ project P: roots=[/work/alpha, /work/shared]
+  └─ session A/B -> project P
+                         │
 Codex app-server thread/list
-  │
   ├─ session A: cwd=/work/alpha
-  ├─ session B: cwd=/work/alpha
+  ├─ session B: cwd=/work/shared
   └─ session C: cwd=/work/beta
-       │
-       ▼
+                         │
+                         ▼
 ProjectBrowser::overview_rows
-  │
-  ├─ alpha · 2 sessions
-  └─ beta  · 1 session
-       │
-       ▼ Enter
-선택한 cwd로 thread/list 재요청
-       │
-       ├─ ＋ 새 대화 시작
-       ├─ session A
-       └─ session B
+  ├─ project P · 2 sessions
+  └─ beta      · 1 session (cwd fallback)
+                         │
+                         ▼ Enter project P
+전체 thread/list + client-side project ID filter
+  ├─ ＋ 새 대화 시작 (/work/alpha)
+  ├─ session A
+  └─ session B
 ```
 
-프로젝트 정보는 새로운 데이터베이스에 저장하지 않습니다. 세션 목록을 로드할 때 기존 `cwd` 메타데이터로 계산합니다.
+프로젝트 정보는 새로운 데이터베이스에 저장하지 않습니다. Desktop 상태 파일과 세션 목록을 읽어 실행 중에만 인덱스를 만들며, 파일에는 아무것도 쓰지 않습니다.
 
 ## 새 세션 선택 흐름
 

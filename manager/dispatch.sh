@@ -21,11 +21,14 @@ upstream_version() {
 }
 
 custom_runtime_ready() {
-  local current real_target package_dir
+  local current real_target package_dir expected_patch_sha installed_patch_sha
   current="$root/bin/codex-current"
   [[ -x "$current" ]] || return 1
   real_target="$(readlink -f "$current")" || return 1
   package_dir="$(dirname "$(dirname "$real_target")")"
+  expected_patch_sha="$(sha256sum "$manager/project-browser.patch" 2>/dev/null | awk '{print $1}')"
+  installed_patch_sha="$(cat "$package_dir/project-browser-patch.sha256" 2>/dev/null || true)"
+  [[ -n "$expected_patch_sha" && "$installed_patch_sha" == "$expected_patch_sha" ]] || return 1
   [[ -x "$(dirname "$real_target")/codex-code-mode-host" ]] &&
     [[ -f "$package_dir/codex-package.json" ]] &&
     [[ -x "$package_dir/codex-path/rg" ]] &&

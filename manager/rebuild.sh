@@ -20,6 +20,8 @@ flock 9
 package_dir="$root/packages/$version"
 target="$package_dir/bin/codex"
 host_target="$package_dir/bin/codex-code-mode-host"
+package_patch_marker="$package_dir/project-browser-patch.sha256"
+patch_sha="$(sha256sum "$patch" | awk '{print $1}')"
 
 official_manifest=""
 while IFS= read -r candidate; do
@@ -64,12 +66,12 @@ runtime_ready() {
     [[ -x "$host_target" ]] &&
     [[ -f "$package_dir/codex-package.json" ]] &&
     [[ -x "$package_dir/codex-path/rg" ]] &&
-    [[ -x "$package_dir/codex-resources/bwrap" ]]
+    [[ -x "$package_dir/codex-resources/bwrap" ]] &&
+    [[ "$(cat "$package_patch_marker" 2>/dev/null || true)" == "$patch_sha" ]]
 }
 
 tag="rust-v$version"
 worktree="$root/versions/$version"
-patch_sha="$(sha256sum "$patch" | awk '{print $1}')"
 patch_marker="$worktree/.project-browser-patch-sha256"
 patch_is_current=false
 if [[ "$(cat "$patch_marker" 2>/dev/null || true)" == "$patch_sha" ]]; then
@@ -108,6 +110,7 @@ fi
 
 install -m 0755 "$repo/codex-rs/target/release/codex" "$target"
 strip "$target"
+printf '%s\n' "$patch_sha" > "$package_patch_marker"
 
 if ! runtime_ready; then
   printf 'rebuilt Codex runtime is incomplete for version %s\n' "$version" >&2
