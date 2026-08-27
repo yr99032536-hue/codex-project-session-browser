@@ -1,0 +1,1064 @@
+diff --git a/codex-rs/tui/src/lib.rs b/codex-rs/tui/src/lib.rs
+index 2c0a96bf0..b6a7e2f48 100644
+--- a/codex-rs/tui/src/lib.rs
++++ b/codex-rs/tui/src/lib.rs
+@@ -1259,6 +1259,7 @@ async fn run_ratatui_app(
+         };
+ 
+     let use_fork = cli.fork_picker || cli.fork_last || cli.fork_session_id.is_some();
++    let mut new_session_cwd = None;
+     let session_selection = if cli.agents_overview {
+         resume_picker::SessionSelection::AgentsOverview
+     } else if use_fork {
+@@ -1424,15 +1425,16 @@ async fn run_ratatui_app(
+         let Some(app_server) = app_server.take() else {
+             unreachable!("app server should be initialized for --resume picker");
+         };
+-        match resume_picker::run_resume_picker_with_app_server(
++        let picker_result = resume_picker::run_resume_picker_with_app_server(
+             &mut tui,
+             &config,
+             cli.resume_show_all,
+             cli.resume_include_non_interactive,
+             app_server,
+         )
+-        .await?
+-        {
++        .await?;
++        new_session_cwd = picker_result.new_session_cwd;
++        match picker_result.selection {
+             resume_picker::SessionSelection::Exit => {
+                 terminal_restore_guard.restore_silently();
+                 session_log::log_session_end();
+@@ -1465,38 +1467,42 @@ async fn run_ratatui_app(
+     }
+ 
+     let current_cwd = config.cwd.clone();
+-    let fallback_cwd = match resolve_startup_resume_or_fork_cwd(
+-        &mut tui,
+-        &config,
+-        state_db.as_deref(),
+-        &session_selection,
+-        cli.cwd.as_deref(),
+-        uses_remote_workspace,
+-        uses_remote_workspace_or_environment(&app_server_target, &environment_manager),
+-    )
+-    .await
+-    {
+-        Ok(ResolveCwdOutcome::Continue(cwd)) => cwd,
+-        Ok(ResolveCwdOutcome::ContinueAfterPrompt(cwd)) => {
+-            // Another daemon client can change authentication while this prompt is open.
+-            startup_account = None;
+-            Some(cwd)
+-        }
+-        Ok(ResolveCwdOutcome::Exit) => {
+-            terminal_restore_guard.restore_silently();
+-            session_log::log_session_end();
+-            return Ok(AppExitInfo {
+-                token_usage: crate::token_usage::TokenUsage::default(),
+-                thread_id: None,
+-                resume_hint: None,
+-                update_action: None,
+-                exit_reason: ExitReason::UserRequested,
+-            });
+-        }
+-        Err(err) => {
+-            terminal_restore_guard.restore_silently();
+-            session_log::log_session_end();
+-            return Err(err);
++    let fallback_cwd = if let Some(cwd) = new_session_cwd.clone() {
++        Some(cwd)
++    } else {
++        match resolve_startup_resume_or_fork_cwd(
++            &mut tui,
++            &config,
++            state_db.as_deref(),
++            &session_selection,
++            cli.cwd.as_deref(),
++            uses_remote_workspace,
++            uses_remote_workspace_or_environment(&app_server_target, &environment_manager),
++        )
++        .await
++        {
++            Ok(ResolveCwdOutcome::Continue(cwd)) => cwd,
++            Ok(ResolveCwdOutcome::ContinueAfterPrompt(cwd)) => {
++                // Another daemon client can change authentication while this prompt is open.
++                startup_account = None;
++                Some(cwd)
++            }
++            Ok(ResolveCwdOutcome::Exit) => {
++                terminal_restore_guard.restore_silently();
++                session_log::log_session_end();
++                return Ok(AppExitInfo {
++                    token_usage: crate::token_usage::TokenUsage::default(),
++                    thread_id: None,
++                    resume_hint: None,
++                    update_action: None,
++                    exit_reason: ExitReason::UserRequested,
++                });
++            }
++            Err(err) => {
++                terminal_restore_guard.restore_silently();
++                session_log::log_session_end();
++                return Err(err);
++            }
+         }
+     };
+ 
+@@ -1507,42 +1513,61 @@ async fn run_ratatui_app(
+         return Err(err.into());
+     }
+ 
+-    let picker_cancelled_without_selection = matches!(
+-        session_selection,
+-        resume_picker::SessionSelection::StartFresh
+-    ) && (cli.resume_picker || cli.fork_picker);
++    let picker_cancelled_without_selection = new_session_cwd.is_none()
++        && matches!(
++            session_selection,
++            resume_picker::SessionSelection::StartFresh
++        )
++        && (cli.resume_picker || cli.fork_picker);
+ 
+-    let reloaded_config = match &session_selection {
+-        resume_picker::SessionSelection::Resume(_) | resume_picker::SessionSelection::Fork(_) => {
+-            startup_draft
+-                .run_until(
+-                    &mut tui,
+-                    load_config_or_exit_with_fallback_cwd(
+-                        cli_kv_overrides.clone(),
+-                        overrides.clone(),
+-                        loader_overrides.clone(),
+-                        cloud_config_bundle.clone(),
+-                        strict_config,
+-                        fallback_cwd,
+-                    ),
+-                )
+-                .await
+-        }
+-        resume_picker::SessionSelection::StartFresh if picker_cancelled_without_selection => {
+-            startup_draft
+-                .run_until(
+-                    &mut tui,
+-                    load_config_or_exit(
+-                        cli_kv_overrides.clone(),
+-                        overrides.clone(),
+-                        loader_overrides.clone(),
+-                        cloud_config_bundle.clone(),
+-                        strict_config,
+-                    ),
+-                )
+-                .await
++    let reloaded_config = if new_session_cwd.is_some() {
++        startup_draft
++            .run_until(
++                &mut tui,
++                load_config_or_exit_with_fallback_cwd(
++                    cli_kv_overrides.clone(),
++                    overrides.clone(),
++                    loader_overrides.clone(),
++                    cloud_config_bundle.clone(),
++                    strict_config,
++                    fallback_cwd,
++                ),
++            )
++            .await
++    } else {
++        match &session_selection {
++            resume_picker::SessionSelection::Resume(_)
++            | resume_picker::SessionSelection::Fork(_) => {
++                startup_draft
++                    .run_until(
++                        &mut tui,
++                        load_config_or_exit_with_fallback_cwd(
++                            cli_kv_overrides.clone(),
++                            overrides.clone(),
++                            loader_overrides.clone(),
++                            cloud_config_bundle.clone(),
++                            strict_config,
++                            fallback_cwd,
++                        ),
++                    )
++                    .await
++            }
++            resume_picker::SessionSelection::StartFresh if picker_cancelled_without_selection => {
++                startup_draft
++                    .run_until(
++                        &mut tui,
++                        load_config_or_exit(
++                            cli_kv_overrides.clone(),
++                            overrides.clone(),
++                            loader_overrides.clone(),
++                            cloud_config_bundle.clone(),
++                            strict_config,
++                        ),
++                    )
++                    .await
++            }
++            _ => Ok(config),
+         }
+-        _ => Ok(config),
+     };
+     let mut config = match reloaded_config {
+         Ok(config) => config,
+diff --git a/codex-rs/tui/src/resume_picker.rs b/codex-rs/tui/src/resume_picker.rs
+index 1f2f7d3e8..adc7040e5 100644
+--- a/codex-rs/tui/src/resume_picker.rs
++++ b/codex-rs/tui/src/resume_picker.rs
+@@ -76,6 +76,7 @@ use uuid::Uuid;
+ 
+ mod archive;
+ mod page_loading;
++mod project_browser;
+ 
+ use page_loading::PageLoadMode;
+ use page_loading::PaginationState;
+@@ -126,6 +127,11 @@ pub enum SessionSelection {
+     Exit,
+ }
+ 
++pub(crate) struct SessionPickerResult {
++    pub(crate) selection: SessionSelection,
++    pub(crate) new_session_cwd: Option<PathBuf>,
++}
++
+ #[derive(Clone, Copy, Debug)]
+ pub enum SessionPickerAction {
+     Resume,
+@@ -341,6 +347,7 @@ struct SessionPickerRunOptions {
+     list_keymap: ListKeymap,
+     initial_page_mode: PageLoadMode,
+     chord_keymap: Arc<RuntimeChordKeymap>,
++    allow_project_new_session: bool,
+ }
+ 
+ /// Interactive session picker that lists app-server threads with simple search,
+@@ -365,7 +372,7 @@ pub async fn run_resume_picker_with_app_server(
+     show_all: bool,
+     include_non_interactive: bool,
+     app_server: AppServerSession,
+-) -> Result<SessionSelection> {
++) -> Result<SessionPickerResult> {
+     let archive_request_handle = app_server.request_handle();
+     run_resume_picker_with_launch_context(
+         tui,
+@@ -388,7 +395,7 @@ pub async fn run_resume_picker_from_existing_session_with_app_server(
+     archive_request_handle: AppServerRequestHandle,
+     current_thread_id: Option<ThreadId>,
+ ) -> Result<SessionSelection> {
+-    run_resume_picker_with_launch_context(
++    Ok(run_resume_picker_with_launch_context(
+         tui,
+         config,
+         show_all,
+@@ -397,7 +404,8 @@ pub async fn run_resume_picker_from_existing_session_with_app_server(
+         archive_request_handle,
+         SessionPickerLaunchContext::ExistingSession { current_thread_id },
+     )
+-    .await
++    .await?
++    .selection)
+ }
+ 
+ async fn run_resume_picker_with_launch_context(
+@@ -408,7 +416,7 @@ async fn run_resume_picker_with_launch_context(
+     app_server: AppServerSession,
+     archive_request_handle: AppServerRequestHandle,
+     launch_context: SessionPickerLaunchContext,
+-) -> Result<SessionSelection> {
++) -> Result<SessionPickerResult> {
+     let (bg_tx, bg_rx) = mpsc::unbounded_channel();
+     let uses_remote_workspace = app_server.uses_remote_workspace();
+     let cwd_filter = picker_cwd_filter(
+@@ -439,6 +447,7 @@ async fn run_resume_picker_with_launch_context(
+             PageLoadMode::StateDbOnly
+         },
+         chord_keymap: runtime_keymap.chords,
++        allow_project_new_session: !uses_remote_workspace,
+     };
+     run_session_picker_with_loader(
+         tui,
+@@ -493,8 +502,9 @@ pub async fn run_fork_picker_with_app_server(
+             PageLoadMode::StateDbOnly
+         },
+         chord_keymap: runtime_keymap.chords,
++        allow_project_new_session: false,
+     };
+-    run_session_picker_with_loader(
++    Ok(run_session_picker_with_loader(
+         tui,
+         options,
+         spawn_app_server_page_loader(
+@@ -507,7 +517,8 @@ pub async fn run_fork_picker_with_app_server(
+         ),
+         bg_rx,
+     )
+-    .await
++    .await?
++    .selection)
+ }
+ 
+ async fn run_session_picker_with_loader(
+@@ -515,7 +526,7 @@ async fn run_session_picker_with_loader(
+     options: SessionPickerRunOptions,
+     picker_loader: PickerLoader,
+     bg_rx: mpsc::UnboundedReceiver<BackgroundEvent>,
+-) -> Result<SessionSelection> {
++) -> Result<SessionPickerResult> {
+     let alt = AltScreenGuard::enter(tui);
+     let mut state = PickerState::new(
+         alt.tui.frame_requester(),
+@@ -533,6 +544,10 @@ async fn run_session_picker_with_loader(
+     state.chord_keymap = options.chord_keymap;
+     state.launch_context = options.launch_context;
+     state.initial_page_mode = options.initial_page_mode;
++    state.allow_project_new_session = options.allow_project_new_session;
++    if state.allow_project_new_session {
++        state.project_browser = project_browser::ProjectBrowser::new(options.action);
++    }
+     state.start_initial_load();
+     state.request_frame();
+ 
+@@ -570,7 +585,10 @@ async fn run_session_picker_with_loader(
+                             continue;
+                         }
+                         if let Some(sel) = state.handle_key(key).await? {
+-                            return Ok(sel);
++                            return Ok(SessionPickerResult {
++                                selection: sel,
++                                new_session_cwd: state.new_session_cwd.take(),
++                            });
+                         }
+                     }
+                     TuiEvent::Paste(pasted) => {
+@@ -591,7 +609,10 @@ async fn run_session_picker_with_loader(
+             }
+             Some(event) = background_events.next() => {
+                 if let Some(selection) = state.handle_background_event(event).await? {
+-                    return Ok(selection);
++                    return Ok(SessionPickerResult {
++                        selection,
++                        new_session_cwd: state.new_session_cwd.take(),
++                    });
+                 }
+             }
+             else => break,
+@@ -599,7 +620,10 @@ async fn run_session_picker_with_loader(
+     }
+ 
+     // Fallback – treat as cancel/new
+-    Ok(SessionSelection::StartFresh)
++    Ok(SessionPickerResult {
++        selection: SessionSelection::StartFresh,
++        new_session_cwd: None,
++    })
+ }
+ 
+ fn raw_reasoning_visibility(config: &Config) -> RawReasoningVisibility {
+@@ -825,6 +849,9 @@ struct PickerState {
+     initial_page_mode: PageLoadMode,
+     chord_keymap: Arc<RuntimeChordKeymap>,
+     chord_matcher: crate::keymap::KeyChordMatcher,
++    project_browser: project_browser::ProjectBrowser,
++    allow_project_new_session: bool,
++    new_session_cwd: Option<PathBuf>,
+ }
+ 
+ #[derive(Clone, Copy, Debug)]
+@@ -1021,6 +1048,9 @@ impl PickerState {
+             initial_page_mode: PageLoadMode::StoreDefault,
+             chord_keymap: Arc::default(),
+             chord_matcher: crate::keymap::KeyChordMatcher::default(),
++            project_browser: project_browser::ProjectBrowser::default(),
++            allow_project_new_session: false,
++            new_session_cwd: None,
+         }
+     }
+ 
+@@ -1179,9 +1209,14 @@ impl PickerState {
+             }
+             _ if self.list_keymap.cancel.is_pressed(key) => {
+                 if self.query.is_empty() {
+-                    return Ok(Some(SessionSelection::StartFresh));
++                    if self.project_browser.back() {
++                        self.start_initial_load();
++                    } else {
++                        return Ok(Some(SessionSelection::StartFresh));
++                    }
++                } else {
++                    self.clear_query_preserving_selection();
+                 }
+-                self.clear_query_preserving_selection();
+             }
+             KeyEvent {
+                 code: KeyCode::Char('t'),
+@@ -1228,6 +1263,13 @@ impl PickerState {
+             _ if self.list_keymap.accept.is_pressed(key)
+                 && !matches!(self.archive_state, archive::ArchiveState::Idle) => {}
+             _ if self.list_keymap.accept.is_pressed(key) => {
++                if let Some(cwd) = self.selected_new_session_cwd() {
++                    self.new_session_cwd = Some(cwd);
++                    return Ok(Some(SessionSelection::StartFresh));
++                }
++                if self.open_selected_project() {
++                    return Ok(None);
++                }
+                 if let Some(row) = self.filtered_rows.get(self.selected) {
+                     let path = row.path.clone();
+                     let thread_id = match row.thread_id {
+@@ -1326,6 +1368,17 @@ impl PickerState {
+                 self.focus_previous_toolbar_control();
+                 self.request_frame();
+             }
++            _ if allow_plain_char_navigation
++                && self.list_keymap.move_left.is_pressed(key)
++                && self.project_browser.back() =>
++            {
++                self.query.clear();
++                self.start_initial_load();
++            }
++            _ if allow_plain_char_navigation
++                && self.list_keymap.move_right.is_pressed(key)
++                && self.open_selected_project() =>
++            {}
+             _ if allow_plain_char_navigation
+                 && (self.list_keymap.move_left.is_pressed(key)
+                     || self.list_keymap.move_right.is_pressed(key)) =>
+@@ -1364,6 +1417,23 @@ impl PickerState {
+         Ok(None)
+     }
+ 
++    fn open_selected_project(&mut self) -> bool {
++        let Some(row) = self.filtered_rows.get(self.selected) else {
++            return false;
++        };
++        if !self.project_browser.enter(row) {
++            return false;
++        }
++        self.query.clear();
++        self.start_initial_load();
++        true
++    }
++
++    fn selected_new_session_cwd(&self) -> Option<PathBuf> {
++        let row = self.filtered_rows.get(self.selected)?;
++        self.project_browser.new_session_cwd(row)
++    }
++
+     fn handle_paste(&mut self, pasted: String) {
+         if self.is_transcript_loading() {
+             return;
+@@ -1565,12 +1635,27 @@ impl PickerState {
+             .all_rows
+             .iter()
+             .filter(|row| self.row_matches_filter(row));
+-        if self.query.is_empty() {
+-            self.filtered_rows = base_iter.cloned().collect();
++        let matching_rows = if self.query.is_empty() {
++            base_iter.cloned().collect::<Vec<_>>()
+         } else {
+             let q = self.query.to_lowercase();
+-            self.filtered_rows = base_iter.filter(|r| r.matches_query(&q)).cloned().collect();
+-        }
++            base_iter
++                .filter(|row| row.matches_query(&q))
++                .cloned()
++                .collect::<Vec<_>>()
++        };
++        self.filtered_rows = if self.project_browser.is_overview() {
++            self.project_browser.overview_rows(matching_rows.iter())
++        } else if self.project_browser.is_inside_project() {
++            let include_new_session = self.allow_project_new_session
++                && self.launch_context == SessionPickerLaunchContext::Startup
++                && self.status == SessionStatus::Active
++                && self.query.is_empty();
++            self.project_browser
++                .project_rows(matching_rows, include_new_session)
++        } else {
++            matching_rows
++        };
+         if self.selected >= self.filtered_rows.len() {
+             self.selected = self.filtered_rows.len().saturating_sub(1);
+         }
+@@ -1582,6 +1667,9 @@ impl PickerState {
+     }
+ 
+     fn row_matches_filter(&self, row: &Row) -> bool {
++        if self.project_browser.is_enabled() {
++            return true;
++        }
+         if self.filter_mode == SessionFilterMode::All {
+             return true;
+         }
+@@ -1782,6 +1870,9 @@ impl PickerState {
+     }
+ 
+     fn toggle_filter_mode(&mut self) {
++        if self.project_browser.is_enabled() {
++            return;
++        }
+         let next_filter_mode = self.filter_mode.toggle(self.filter_cwd.as_deref());
+         if self.filter_mode == next_filter_mode {
+             return;
+@@ -1799,6 +1890,9 @@ impl PickerState {
+     }
+ 
+     fn active_cwd_filter(&self) -> Option<PathBuf> {
++        if self.project_browser.is_enabled() {
++            return self.project_browser.selected_cwd().map(Path::to_path_buf);
++        }
+         match self.filter_mode {
+             SessionFilterMode::Cwd => self.filter_cwd.clone(),
+             SessionFilterMode::All => None,
+@@ -2039,10 +2133,14 @@ fn draw_picker(tui: &mut Tui, state: &PickerState, screen_size: Size) -> std::io
+         };
+ 
+         // Header
++        let header_text = match state.project_browser.selected_label() {
++            Some(project) => format!("{}  ›  {project}", state.action.title()),
++            None => state.action.title().to_string(),
++        };
+         let header_title = if default_bg().is_some_and(is_light) {
+-            state.action.title().bold().fg(best_color((0, 100, 0)))
++            header_text.bold().fg(best_color((0, 100, 0)))
+         } else {
+-            state.action.title().bold().cyan()
++            header_text.bold().cyan()
+         };
+         let header_line: Line = vec![header_title].into();
+         frame.render_widget_ref(&header_line, chrome(header));
+@@ -2176,6 +2274,17 @@ fn sort_control_spans(state: &PickerState, compact: bool) -> Vec<Span<'static>>
+ 
+ fn filter_control_spans(state: &PickerState, compact: bool) -> Vec<Span<'static>> {
+     let filter_focused = state.toolbar_focus == ToolbarControl::Filter;
++    if state.project_browser.is_enabled() {
++        let label = if state.project_browser.is_overview() {
++            "Projects"
++        } else {
++            "Project"
++        };
++        return vec![
++            "View:".dim(),
++            toolbar_value(label, /*active*/ true, filter_focused),
++        ];
++    }
+     if compact || state.filter_cwd.is_none() {
+         return vec![
+             "Filter:".dim(),
+@@ -2365,19 +2474,34 @@ fn footer_hint_lines(state: &PickerState, width: u16) -> Vec<Line<'static>> {
+         return vec![line, Line::default()];
+     }
+ 
+-    let action_label = if state.status == SessionStatus::Archived {
++    let selected_is_project = state
++        .filtered_rows
++        .get(state.selected)
++        .is_some_and(project_browser::is_project_row);
++    let selected_is_new_session = state
++        .filtered_rows
++        .get(state.selected)
++        .is_some_and(project_browser::is_new_session_row);
++    let action_label = if selected_is_new_session {
++        "start"
++    } else if selected_is_project {
++        "open"
++    } else if state.status == SessionStatus::Archived {
+         "restore"
+     } else {
+         state.action.action_label()
+     };
+-    let (esc_label, esc_compact_label) = if state.query.is_empty() {
+-        match state.launch_context {
+-            SessionPickerLaunchContext::Startup => ("start new", "new"),
+-            SessionPickerLaunchContext::ExistingSession { .. } => ("exit", "exit"),
+-        }
+-    } else {
+-        ("clear search", "clear")
+-    };
++    let (esc_label, esc_compact_label) =
++        if state.query.is_empty() && state.project_browser.is_inside_project() {
++            ("projects", "back")
++        } else if state.query.is_empty() {
++            match state.launch_context {
++                SessionPickerLaunchContext::Startup => ("start new", "new"),
++                SessionPickerLaunchContext::ExistingSession { .. } => ("exit", "exit"),
++            }
++        } else {
++            ("clear search", "clear")
++        };
+     let ctrl_c_label = match state.launch_context {
+         SessionPickerLaunchContext::Startup => "quit",
+         SessionPickerLaunchContext::ExistingSession { .. } => "exit",
+@@ -2747,6 +2871,9 @@ fn render_session_lines(
+     is_zebra: bool,
+     width: u16,
+ ) -> Vec<Line<'static>> {
++    if project_browser::is_project_row(row) || project_browser::is_new_session_row(row) {
++        return render_project_lines(row, is_selected, is_zebra, width);
++    }
+     match state.density {
+         SessionListDensity::Comfortable => {
+             render_comfortable_session_lines(row, state, is_selected, is_expanded, is_zebra, width)
+@@ -2757,6 +2884,47 @@ fn render_session_lines(
+     }
+ }
+ 
++fn render_project_lines(
++    row: &Row,
++    is_selected: bool,
++    is_zebra: bool,
++    width: u16,
++) -> Vec<Line<'static>> {
++    let marker = selection_marker(is_selected, /*is_expanded*/ false);
++    let title = truncate_text(row.display_preview(), width.saturating_sub(2) as usize);
++    let title = if is_selected {
++        selected_session_title_span(title)
++    } else {
++        title.into()
++    };
++    let cwd = row
++        .cwd
++        .as_ref()
++        .map(|path| {
++            format_directory_display(
++                path,
++                /*max_width*/ Some(usize::from(width.saturating_sub(4))),
++            )
++        })
++        .unwrap_or_default();
++    let mut lines = vec![Line::from(vec![marker, title])];
++    if !cwd.is_empty() {
++        lines.push(vec!["  ".into(), cwd.dim()].into());
++    }
++    let style = if is_selected {
++        Some(dense_selected_style())
++    } else if is_zebra {
++        Some(dense_zebra_style())
++    } else {
++        None
++    };
++    if let Some(style) = style {
++        apply_session_row_background(lines, style, width)
++    } else {
++        lines
++    }
++}
++
+ fn render_comfortable_session_lines(
+     row: &Row,
+     state: &PickerState,
+diff --git a/codex-rs/tui/src/resume_picker/archive.rs b/codex-rs/tui/src/resume_picker/archive.rs
+index 41f065929..e59cfeb5b 100644
+--- a/codex-rs/tui/src/resume_picker/archive.rs
++++ b/codex-rs/tui/src/resume_picker/archive.rs
+@@ -36,7 +36,10 @@ impl PickerState {
+         }
+ 
+         let archive_key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
+-        self.list_keymap.action_for(archive_key).is_none()
++        self.filtered_rows
++            .get(self.selected)
++            .is_some_and(|row| row.thread_id.is_some())
++            && self.list_keymap.action_for(archive_key).is_none()
+             && !self.chord_keymap.bindings.iter().any(|binding| {
+                 binding.action.context == KeymapContext::List
+                     && binding.chord.prefix.is_press(archive_key)
+diff --git a/codex-rs/tui/src/resume_picker/project_browser.rs b/codex-rs/tui/src/resume_picker/project_browser.rs
+new file mode 100644
+index 000000000..bfc7b0a21
+--- /dev/null
++++ b/codex-rs/tui/src/resume_picker/project_browser.rs
+@@ -0,0 +1,211 @@
++use std::collections::HashMap;
++use std::path::Path;
++use std::path::PathBuf;
++
++use chrono::DateTime;
++use chrono::Utc;
++
++use super::Row;
++use super::SessionPickerAction;
++use crate::status::format_directory_display;
++
++const NEW_SESSION_PREVIEW: &str = "＋ 새 대화 시작";
++
++#[derive(Default)]
++pub(super) struct ProjectBrowser {
++    enabled: bool,
++    selected_project: Option<SelectedProject>,
++}
++
++struct SelectedProject {
++    cwd: PathBuf,
++    label: String,
++}
++
++enum OverviewEntry {
++    Project(ProjectGroup),
++    Session(Row),
++}
++
++struct ProjectGroup {
++    cwd: PathBuf,
++    label: String,
++    session_count: usize,
++    created_at: Option<DateTime<Utc>>,
++    updated_at: Option<DateTime<Utc>>,
++}
++
++impl ProjectBrowser {
++    pub(super) fn new(action: SessionPickerAction) -> Self {
++        Self {
++            enabled: matches!(action, SessionPickerAction::Resume),
++            selected_project: None,
++        }
++    }
++
++    pub(super) fn is_enabled(&self) -> bool {
++        self.enabled
++    }
++
++    pub(super) fn is_overview(&self) -> bool {
++        self.enabled && self.selected_project.is_none()
++    }
++
++    pub(super) fn is_inside_project(&self) -> bool {
++        self.selected_project.is_some()
++    }
++
++    pub(super) fn selected_cwd(&self) -> Option<&Path> {
++        self.selected_project
++            .as_ref()
++            .map(|project| project.cwd.as_path())
++    }
++
++    pub(super) fn selected_label(&self) -> Option<&str> {
++        self.selected_project
++            .as_ref()
++            .map(|project| project.label.as_str())
++    }
++
++    pub(super) fn enter(&mut self, row: &Row) -> bool {
++        if !self.is_overview() || !is_project_row(row) {
++            return false;
++        }
++        let Some(cwd) = row.cwd.clone() else {
++            return false;
++        };
++        self.selected_project = Some(SelectedProject {
++            label: project_label(&cwd),
++            cwd,
++        });
++        true
++    }
++
++    pub(super) fn back(&mut self) -> bool {
++        self.selected_project.take().is_some()
++    }
++
++    pub(super) fn overview_rows<'a>(&self, rows: impl Iterator<Item = &'a Row>) -> Vec<Row> {
++        let mut entries = Vec::<OverviewEntry>::new();
++        let mut project_positions = HashMap::<PathBuf, usize>::new();
++
++        for row in rows {
++            let Some(cwd) = row.cwd.as_ref() else {
++                entries.push(OverviewEntry::Session(row.clone()));
++                continue;
++            };
++
++            if let Some(position) = project_positions.get(cwd).copied() {
++                let OverviewEntry::Project(project) = &mut entries[position] else {
++                    continue;
++                };
++                project.session_count = project.session_count.saturating_add(1);
++                project.created_at = latest(project.created_at, row.created_at);
++                project.updated_at = latest(project.updated_at, row.updated_at);
++                continue;
++            }
++
++            project_positions.insert(cwd.clone(), entries.len());
++            entries.push(OverviewEntry::Project(ProjectGroup {
++                cwd: cwd.clone(),
++                label: project_label(cwd),
++                session_count: 1,
++                created_at: row.created_at,
++                updated_at: row.updated_at,
++            }));
++        }
++
++        entries
++            .into_iter()
++            .map(|entry| match entry {
++                OverviewEntry::Project(project) => project.into_row(),
++                OverviewEntry::Session(row) => row,
++            })
++            .collect()
++    }
++
++    pub(super) fn project_rows(&self, rows: Vec<Row>, include_new_session: bool) -> Vec<Row> {
++        if !include_new_session {
++            return rows;
++        }
++        let Some(cwd) = self.selected_cwd() else {
++            return rows;
++        };
++        let mut project_rows = Vec::with_capacity(rows.len().saturating_add(1));
++        project_rows.push(Row {
++            path: None,
++            preview: NEW_SESSION_PREVIEW.to_string(),
++            thread_id: None,
++            thread_name: None,
++            created_at: None,
++            updated_at: None,
++            cwd: Some(cwd.to_path_buf()),
++            git_branch: None,
++        });
++        project_rows.extend(rows);
++        project_rows
++    }
++
++    pub(super) fn new_session_cwd(&self, row: &Row) -> Option<PathBuf> {
++        if !self.is_inside_project() || !is_new_session_row(row) {
++            return None;
++        }
++        let selected_cwd = self.selected_cwd()?;
++        let row_cwd = row.cwd.as_deref()?;
++        (row_cwd == selected_cwd).then(|| selected_cwd.to_path_buf())
++    }
++}
++
++impl ProjectGroup {
++    fn into_row(self) -> Row {
++        let session_label = if self.session_count == 1 {
++            "session"
++        } else {
++            "sessions"
++        };
++        Row {
++            path: None,
++            preview: format!(
++                "▸ {}  ·  {} {session_label}",
++                self.label, self.session_count
++            ),
++            thread_id: None,
++            thread_name: None,
++            created_at: self.created_at,
++            updated_at: self.updated_at,
++            cwd: Some(self.cwd),
++            git_branch: None,
++        }
++    }
++}
++
++pub(super) fn is_project_row(row: &Row) -> bool {
++    !is_new_session_row(row) && row.path.is_none() && row.thread_id.is_none() && row.cwd.is_some()
++}
++
++pub(super) fn is_new_session_row(row: &Row) -> bool {
++    row.path.is_none()
++        && row.thread_id.is_none()
++        && row.cwd.is_some()
++        && row.preview == NEW_SESSION_PREVIEW
++}
++
++fn project_label(cwd: &Path) -> String {
++    cwd.file_name()
++        .and_then(|name| name.to_str())
++        .filter(|name| !name.is_empty())
++        .map(str::to_string)
++        .unwrap_or_else(|| format_directory_display(cwd, /*max_width*/ None))
++}
++
++fn latest(left: Option<DateTime<Utc>>, right: Option<DateTime<Utc>>) -> Option<DateTime<Utc>> {
++    match (left, right) {
++        (Some(left), Some(right)) => Some(left.max(right)),
++        (Some(value), None) | (None, Some(value)) => Some(value),
++        (None, None) => None,
++    }
++}
++
++#[cfg(test)]
++#[path = "project_browser_tests.rs"]
++mod tests;
+diff --git a/codex-rs/tui/src/resume_picker/project_browser_tests.rs b/codex-rs/tui/src/resume_picker/project_browser_tests.rs
+new file mode 100644
+index 000000000..690425c45
+--- /dev/null
++++ b/codex-rs/tui/src/resume_picker/project_browser_tests.rs
+@@ -0,0 +1,158 @@
++use std::path::Path;
++use std::path::PathBuf;
++use std::sync::Arc;
++
++use chrono::TimeZone;
++use chrono::Utc;
++use crossterm::event::KeyCode;
++use crossterm::event::KeyEvent;
++use crossterm::event::KeyModifiers;
++use ratatui::layout::Rect;
++
++use super::ProjectBrowser;
++use super::is_new_session_row;
++use super::is_project_row;
++use crate::custom_terminal::Terminal;
++use crate::resume_picker::PickerLoader;
++use crate::resume_picker::PickerState;
++use crate::resume_picker::ProviderFilter;
++use crate::resume_picker::Row;
++use crate::resume_picker::SessionPickerAction;
++use crate::resume_picker::SessionSelection;
++use crate::resume_picker::render_list;
++use crate::test_backend::VT100Backend;
++use crate::tui::FrameRequester;
++
++fn row(path: &str, cwd: Option<&str>, preview: &str, updated_at: i64) -> Row {
++    let timestamp = Utc.timestamp_opt(updated_at, 0).single();
++    Row {
++        path: Some(PathBuf::from(path)),
++        preview: preview.to_string(),
++        thread_id: None,
++        thread_name: None,
++        created_at: timestamp,
++        updated_at: timestamp,
++        cwd: cwd.map(PathBuf::from),
++        git_branch: None,
++    }
++}
++
++fn project_state() -> PickerState {
++    let loader: PickerLoader = Arc::new(|_| {});
++    let mut state = PickerState::new(
++        FrameRequester::test_dummy(),
++        loader,
++        ProviderFilter::MatchDefault(String::from("openai")),
++        /*show_all*/ true,
++        /*filter_cwd*/ None,
++        SessionPickerAction::Resume,
++    );
++    state.project_browser = ProjectBrowser::new(SessionPickerAction::Resume);
++    state.all_rows = vec![
++        row("/tmp/a.jsonl", Some("/work/alpha"), "First", 30),
++        row("/tmp/b.jsonl", Some("/work/alpha"), "Second", 20),
++        row("/tmp/c.jsonl", Some("/work/beta"), "Third", 10),
++    ];
++    state.apply_filter();
++    let project = state.filtered_rows[0].clone();
++    assert!(state.project_browser.enter(&project));
++    state
++        .all_rows
++        .retain(|row| row.cwd.as_deref() == Some(Path::new("/work/alpha")));
++    state.allow_project_new_session = true;
++    state.apply_filter();
++    state
++}
++
++#[test]
++fn overview_groups_sessions_by_working_directory() {
++    let browser = ProjectBrowser::new(SessionPickerAction::Resume);
++    let rows = [
++        row("/tmp/a.jsonl", Some("/work/alpha"), "First", 30),
++        row("/tmp/b.jsonl", Some("/work/beta"), "Second", 20),
++        row("/tmp/c.jsonl", Some("/work/alpha"), "Third", 10),
++        row("/tmp/d.jsonl", None, "Unscoped", 5),
++    ];
++
++    let overview = browser.overview_rows(rows.iter());
++
++    assert_eq!(overview.len(), 3);
++    assert!(is_project_row(&overview[0]));
++    assert_eq!(overview[0].display_preview(), "▸ alpha  ·  2 sessions");
++    assert!(is_project_row(&overview[1]));
++    assert_eq!(overview[1].display_preview(), "▸ beta  ·  1 session");
++    assert_eq!(overview[2].display_preview(), "Unscoped");
++}
++
++#[test]
++fn project_rows_start_with_new_session_action() {
++    let state = project_state();
++
++    assert!(is_new_session_row(&state.filtered_rows[0]));
++    assert_eq!(state.filtered_rows[0].display_preview(), "＋ 새 대화 시작");
++    assert_eq!(
++        state
++            .project_browser
++            .new_session_cwd(&state.filtered_rows[0]),
++        Some(PathBuf::from("/work/alpha"))
++    );
++}
++
++#[tokio::test]
++async fn accepting_new_session_action_returns_selected_project_cwd() {
++    let mut state = project_state();
++
++    let selection = state
++        .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
++        .await
++        .expect("handle enter");
++
++    assert!(matches!(selection, Some(SessionSelection::StartFresh)));
++    assert_eq!(state.new_session_cwd, Some(PathBuf::from("/work/alpha")));
++}
++
++#[test]
++fn project_can_be_entered_and_left() {
++    let mut browser = ProjectBrowser::new(SessionPickerAction::Resume);
++    let rows = [row("/tmp/a.jsonl", Some("/work/alpha"), "First", 30)];
++    let overview = browser.overview_rows(rows.iter());
++
++    assert!(browser.enter(&overview[0]));
++    assert_eq!(browser.selected_cwd(), Some(Path::new("/work/alpha")));
++    assert_eq!(browser.selected_label(), Some("alpha"));
++    assert!(browser.back());
++    assert!(browser.is_overview());
++}
++
++#[test]
++fn fork_picker_keeps_the_flat_session_list() {
++    let browser = ProjectBrowser::new(SessionPickerAction::Fork);
++
++    assert!(!browser.is_enabled());
++    assert!(!browser.is_overview());
++}
++
++#[test]
++fn project_sessions_snapshot() {
++    let mut state = project_state();
++    state.relative_time_reference = Utc.timestamp_opt(40, 0).single();
++    state.update_viewport(/*rows*/ 8, /*width*/ 80);
++
++    let width = 80;
++    let height = 8;
++    let backend = VT100Backend::new(width, height);
++    let mut terminal = Terminal::with_options(backend).expect("terminal");
++    terminal.set_viewport_area(Rect::new(0, 0, width, height));
++
++    {
++        let mut frame = terminal.get_frame();
++        let area = frame.area();
++        render_list(&mut frame, area, &state);
++    }
++    terminal.flush().expect("flush");
++
++    insta::assert_snapshot!(
++        "resume_picker_project_sessions_with_new_action",
++        terminal.backend().to_string()
++    );
++}
+diff --git a/codex-rs/tui/src/resume_picker/snapshots/codex_tui__resume_picker__project_browser__tests__resume_picker_project_sessions_with_new_action.snap b/codex-rs/tui/src/resume_picker/snapshots/codex_tui__resume_picker__project_browser__tests__resume_picker_project_sessions_with_new_action.snap
+new file mode 100644
+index 000000000..255baf6a7
+--- /dev/null
++++ b/codex-rs/tui/src/resume_picker/snapshots/codex_tui__resume_picker__project_browser__tests__resume_picker_project_sessions_with_new_action.snap
+@@ -0,0 +1,12 @@
++---
++source: tui/src/resume_picker/project_browser_tests.rs
++expression: terminal.backend().to_string()
++---
++❯ ＋ 새 대화 시작
++  /work/alpha
++
++  First
++  10s ago       ⌁ /work/alpha                     no branch
++
++  Second
++↓ more

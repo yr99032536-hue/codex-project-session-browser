@@ -1,0 +1,17 @@
+name: validate
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check shell syntax
+        run: bash -n install.sh uninstall.sh manager/dispatch.sh manager/rebuild.sh
+      - name: Check patch against Codex 0.150.1
+        run: |
+          git clone --depth=1 --branch rust-v0.150.1 https://github.com/openai/codex.git upstream
+          git -C upstream apply --check ../patches/project-browser.patch
