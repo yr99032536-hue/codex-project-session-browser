@@ -67,6 +67,28 @@ codex --version
 
 버전이 올라간 직후 경고가 표시됐다면 GitHub 저장소에서 새 버전 지원 여부를 확인해야 합니다. 자동 업데이트가 실행됐더라도 업스트림 Rust 소스의 위치나 구조가 바뀌면 기존 패치를 기계적으로 이식할 수 없습니다. 실패 시 설정이나 세션을 삭제하지 않고 공식 CLI로 대체하므로 프로젝트 묶음 화면만 사라져 보이는 것은 의도된 안전 동작입니다.
 
+새 버전용 패치가 저장소에 게시된 뒤에는 다음 명령으로 즉시 다시 확인할 수 있습니다.
+
+```bash
+codex update
+```
+
+설치 상태와 패치 해시는 다음 명령으로 한 번에 검사합니다.
+
+```bash
+~/.local/share/codex-project-session-browser/manager/doctor.sh
+```
+
+## 09시 자동 업데이트 확인
+
+```bash
+systemctl --user status codex-project-session-browser-update.timer
+systemctl --user list-timers codex-project-session-browser-update.timer
+journalctl --user -u codex-project-session-browser-update.service -n 100 --no-pager
+```
+
+타이머는 Codex Desktop 앱과 별도로 동작하며, 놓친 실행은 다음 사용자 로그인 때 보충합니다.
+
 ## 런타임 구성 요소 확인
 
 ```bash

@@ -24,6 +24,7 @@
        └─ manager/dispatch.sh
             ├─ 정상 상태 ─────────> packages/<version>/bin/codex
             ├─ 버전 변경/누락 ────> manager/rebuild.sh
+            │                         └─ manager/refresh-patch.sh
             └─ 패치/빌드 실패 ────> ~/.local/bin/codex-upstream
 ```
 
@@ -45,21 +46,31 @@
 - 버전이 다르거나 파일이 빠졌으면 `rebuild.sh`를 호출합니다.
 - 복구에 실패하면 공식 `codex-upstream`을 실행합니다.
 - 첫 인자가 `update`이면 공식 업데이트 후 패치 재적용 흐름을 실행합니다.
+- 공식 업데이트와 재빌드 전체에 잠금을 걸어 여러 예약 실행이 겹쳐도 직렬로 처리합니다.
+- 공식 업데이트는 성공했지만 커스텀 재빌드가 실패하면 비정상 종료해 자동화가 실패를 감지하게 합니다.
+
+### `manager/refresh-patch.sh`
+
+- GitHub의 `patches/manifest.tsv`에서 정확히 일치하는 Codex 버전을 찾습니다.
+- 허용된 저장소 상대 경로만 내려받습니다.
+- 목록의 SHA-256과 다운로드한 패치가 일치할 때만 로컬 패치를 원자적으로 교체합니다.
+- 네트워크 또는 새 버전 항목이 없으면 기존 로컬 패치를 그대로 시도합니다.
 
 ### `manager/rebuild.sh`
 
 버전별 소스, 패치, 빌드, 런타임 조립을 담당합니다.
 
-1. npm 패키지에서 현재 버전과 플랫폼 런타임을 찾습니다.
-2. `codex-code-mode-host`, `rg`, `bwrap`을 검사합니다.
-3. 공식 런타임을 `packages/<version>`에 복사합니다.
-4. 패치 SHA-256을 worktree와 설치된 패키지의 SHA-256 기록과 비교합니다.
-5. 새 버전 또는 새 패치이면 공식 `rust-v<version>` 태그로 worktree를 만듭니다.
-6. `git apply --check` 후 패치를 적용합니다.
-7. 공유 Cargo target 디렉터리에서 `codex-cli` 릴리스를 빌드합니다.
-8. 빌드한 바이너리를 같은 버전의 공식 런타임에 설치합니다.
-9. 설치된 바이너리의 패치 SHA-256을 기록합니다.
-10. `codex-current` 링크와 `current-version`을 갱신합니다.
+1. 해당 버전의 게시된 호환 패치를 확인합니다.
+2. npm 패키지에서 현재 버전과 플랫폼 런타임을 찾습니다.
+3. `codex-code-mode-host`, `rg`, `bwrap`을 검사합니다.
+4. 공식 런타임을 `packages/<version>`에 복사합니다.
+5. 패치 SHA-256을 worktree와 설치된 패키지의 SHA-256 기록과 비교합니다.
+6. 새 버전 또는 새 패치이면 공식 `rust-v<version>` 태그로 worktree를 만듭니다.
+7. `git apply --check` 후 패치를 적용합니다.
+8. 공유 Cargo target 디렉터리에서 `codex-cli` 릴리스를 빌드합니다.
+9. 빌드한 바이너리를 같은 버전의 공식 런타임에 설치합니다.
+10. 설치된 바이너리의 패치 SHA-256을 기록합니다.
+11. `codex-current` 링크와 `current-version`을 갱신합니다.
 
 공유 빌드 캐시는 버전이 올라가도 공통 의존성을 다시 활용하기 위한 구조입니다.
 
@@ -169,6 +180,8 @@ startup cwd 결정
 2. 경고를 출력합니다.
 3. 공식 `codex-upstream`으로 같은 명령을 실행합니다.
 4. 패치를 새 버전 소스에 맞게 갱신하면 다시 커스텀 빌드를 사용할 수 있습니다.
+
+실패한 버전과 패치 SHA-256 조합은 6시간 동안 기록해 앱 서버가 시작될 때마다 같은 긴 빌드를 반복하지 않습니다. `codex update`는 이 대기 시간을 무시하고 강제로 다시 확인합니다. 호환 패치가 GitHub에 게시되면 다음 예약 업데이트가 새로운 SHA-256을 감지해 worktree를 다시 만들고 복구합니다.
 
 ## 배포하지 않는 항목
 

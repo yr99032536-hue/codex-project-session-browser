@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-root="$HOME/.local/share/codex-project-session-browser"
+manager="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+root="$(dirname "$manager")"
 repo="$root/repo"
-patch="$root/manager/project-browser.patch"
+patch="$manager/project-browser.patch"
 bin_dir="$root/bin"
 version="${1:-}"
-official_package="$(npm root -g)/@openai/codex"
+official_package="${CODEX_PROJECT_SESSION_BROWSER_OFFICIAL_PACKAGE:-$(npm root -g)/@openai/codex}"
+force_rebuild="${CODEX_PROJECT_SESSION_BROWSER_FORCE_REBUILD:-0}"
 
 if [[ -z "$version" ]]; then
   version="$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).version" "$official_package/package.json")"
@@ -17,11 +19,39 @@ mkdir -p "$bin_dir" "$root/packages" "$root/versions"
 exec 9>"$root/rebuild.lock"
 flock 9
 
+if ! "$manager/refresh-patch.sh" "$version"; then
+  printf 'warning: compatibility patch refresh failed; trying the local patch\n' >&2
+fi
+
 package_dir="$root/packages/$version"
 target="$package_dir/bin/codex"
 host_target="$package_dir/bin/codex-code-mode-host"
 package_patch_marker="$package_dir/project-browser-patch.sha256"
 patch_sha="$(sha256sum "$patch" | awk '{print $1}')"
+legacy_target="$bin_dir/codex-$version"
+failure_dir="$root/failures"
+failure_marker="$failure_dir/$version-$patch_sha.failed"
+
+if [[ "$force_rebuild" != "1" && -f "$failure_marker" ]]; then
+  failure_time="$(stat -c %Y "$failure_marker" 2>/dev/null || printf '0')"
+  current_time="$(date +%s)"
+  if (( current_time - failure_time < 21600 )); then
+    printf 'recent rebuild failure is cached for Codex %s; using the official binary\n' "$version" >&2
+    exit 1
+  fi
+fi
+
+mkdir -p "$failure_dir"
+mark_failure=false
+record_failure() {
+  local status=$?
+  if (( status != 0 )) && [[ "$mark_failure" == "true" ]]; then
+    printf '%s\n' "$(date --iso-8601=seconds)" > "$failure_marker"
+  fi
+  exit "$status"
+}
+trap record_failure EXIT
+mark_failure=true
 
 official_manifest=""
 while IFS= read -r candidate; do
@@ -61,6 +91,10 @@ if [[ -x "$bundled_zsh" ]] && ! "$bundled_zsh" -fc 'exit 0' >/dev/null 2>&1; the
   printf 'warning: bundled zsh is incompatible with this system; using the standard shell runtime\n' >&2
 fi
 
+if [[ ! -x "$target" && -x "$legacy_target" ]]; then
+  install -m 0755 "$legacy_target" "$target"
+fi
+
 runtime_ready() {
   [[ -x "$target" ]] &&
     [[ -x "$host_target" ]] &&
@@ -81,6 +115,7 @@ fi
 if runtime_ready && [[ "$patch_is_current" == true ]]; then
   ln -sfn "$target" "$bin_dir/codex-current"
   printf '%s\n' "$version" > "$root/current-version"
+  mark_failure=false
   exit 0
 fi
 
@@ -119,3 +154,5 @@ fi
 
 ln -sfn "$target" "$bin_dir/codex-current"
 printf '%s\n' "$version" > "$root/current-version"
+mark_failure=false
+find "$failure_dir" -maxdepth 1 -type f -name "$version-*.failed" -delete

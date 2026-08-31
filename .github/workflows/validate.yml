@@ -10,8 +10,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Check shell syntax
-        run: bash -n install.sh uninstall.sh manager/dispatch.sh manager/rebuild.sh
-      - name: Check patch against Codex 0.151.0
+        run: bash -n install.sh install-systemd-timer.sh uninstall.sh manager/*.sh tests/*.sh
+      - name: Test update manager
         run: |
-          git clone --depth=1 --branch rust-v0.151.0 https://github.com/openai/codex.git upstream
-          git -C upstream apply --check ../patches/project-browser.patch
+          ./tests/refresh-patch.sh
+          ./tests/doctor.sh
+          ./tests/dispatch.sh
+          ./tests/rebuild-failure.sh
+      - name: Verify compatibility manifest
+        run: |
+          while IFS=$'\t' read -r version expected_sha patch_path; do
+            [[ -z "$version" || "$version" == \#* ]] && continue
+            echo "$expected_sha  $patch_path" | sha256sum --check --strict
+            git clone --depth=1 --branch "rust-v$version" https://github.com/openai/codex.git "upstream-$version"
+            git -C "upstream-$version" apply --check "../$patch_path"
+          done < patches/manifest.tsv

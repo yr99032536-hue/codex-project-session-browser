@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-root="$HOME/.local/share/codex-project-session-browser"
+manager="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+root="$(dirname "$manager")"
 manager="$root/manager"
 upstream="$HOME/.local/bin/codex-upstream"
 launcher="$HOME/.local/bin/codex"
@@ -11,7 +12,11 @@ restore_launcher() {
 }
 
 official_package() {
-  printf '%s/@openai/codex\n' "$(npm root -g)"
+  if [[ -n "${CODEX_PROJECT_SESSION_BROWSER_OFFICIAL_PACKAGE:-}" ]]; then
+    printf '%s\n' "$CODEX_PROJECT_SESSION_BROWSER_OFFICIAL_PACKAGE"
+  else
+    printf '%s/@openai/codex\n' "$(npm root -g)"
+  fi
 }
 
 upstream_version() {
@@ -36,6 +41,10 @@ custom_runtime_ready() {
 }
 
 if [[ "${1:-}" == "update" ]]; then
+  mkdir -p "$root"
+  exec 8>"$root/update.lock"
+  flock 8
+
   "$upstream" "$@"
   update_status=$?
   restore_launcher
@@ -44,11 +53,13 @@ if [[ "${1:-}" == "update" ]]; then
   fi
 
   version="$(upstream_version)"
-  if ! "$manager/rebuild.sh" "$version"; then
+  CODEX_PROJECT_SESSION_BROWSER_FORCE_REBUILD=1 "$manager/rebuild.sh" "$version"
+  rebuild_status=$?
+  if (( rebuild_status != 0 )); then
     printf 'warning: project session browser could not be rebuilt for Codex %s; using the official binary\n' "$version" >&2
   fi
   restore_launcher
-  exit 0
+  exit "$rebuild_status"
 fi
 
 version="$(upstream_version 2>/dev/null || true)"

@@ -9,7 +9,7 @@ launcher="$bin_dir/codex"
 upstream="$bin_dir/codex-upstream"
 source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-for command_name in bash git node npm flock sha256sum strip cargo; do
+for command_name in bash curl git node npm flock sha256sum strip cargo; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     printf 'required command is missing: %s\n' "$command_name" >&2
     exit 1
@@ -25,6 +25,9 @@ fi
 mkdir -p "$manager" "$bin_dir"
 install -m 0755 "$source_root/manager/dispatch.sh" "$manager/dispatch.sh"
 install -m 0755 "$source_root/manager/rebuild.sh" "$manager/rebuild.sh"
+install -m 0755 "$source_root/manager/refresh-patch.sh" "$manager/refresh-patch.sh"
+install -m 0755 "$source_root/manager/doctor.sh" "$manager/doctor.sh"
+install -m 0755 "$source_root/manager/update-and-verify.sh" "$manager/update-and-verify.sh"
 install -m 0644 "$source_root/patches/project-browser.patch" "$manager/project-browser.patch"
 install -m 0644 "$source_root/README.md" "$manager/README.md"
 

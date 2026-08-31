@@ -1,0 +1,1677 @@
+diff --git a/codex-rs/tui/src/lib.rs b/codex-rs/tui/src/lib.rs
+index 2c0a96bf0..b6a7e2f48 100644
+--- a/codex-rs/tui/src/lib.rs
++++ b/codex-rs/tui/src/lib.rs
+@@ -1259,6 +1259,7 @@ async fn run_ratatui_app(
+         };
+ 
+     let use_fork = cli.fork_picker || cli.fork_last || cli.fork_session_id.is_some();
++    let mut new_session_cwd = None;
+     let session_selection = if cli.agents_overview {
+         resume_picker::SessionSelection::AgentsOverview
+     } else if use_fork {
+@@ -1424,15 +1425,16 @@ async fn run_ratatui_app(
+         let Some(app_server) = app_server.take() else {
+             unreachable!("app server should be initialized for --resume picker");
+         };
+-        match resume_picker::run_resume_picker_with_app_server(
++        let picker_result = resume_picker::run_resume_picker_with_app_server(
+             &mut tui,
+             &config,
+             cli.resume_show_all,
+             cli.resume_include_non_interactive,
+             app_server,
+         )
+-        .await?
+-        {
++        .await?;
++        new_session_cwd = picker_result.new_session_cwd;
++        match picker_result.selection {
+             resume_picker::SessionSelection::Exit => {
+                 terminal_restore_guard.restore_silently();
+                 session_log::log_session_end();
+@@ -1465,38 +1467,42 @@ async fn run_ratatui_app(
+     }
+ 
+     let current_cwd = config.cwd.clone();
+-    let fallback_cwd = match resolve_startup_resume_or_fork_cwd(
+-        &mut tui,
+-        &config,
+-        state_db.as_deref(),
+-        &session_selection,
+-        cli.cwd.as_deref(),
+-        uses_remote_workspace,
+-        uses_remote_workspace_or_environment(&app_server_target, &environment_manager),
+-    )
+-    .await
+-    {
+-        Ok(ResolveCwdOutcome::Continue(cwd)) => cwd,
+-        Ok(ResolveCwdOutcome::ContinueAfterPrompt(cwd)) => {
+-            // Another daemon client can change authentication while this prompt is open.
+-            startup_account = None;
+-            Some(cwd)
+-        }
+-        Ok(ResolveCwdOutcome::Exit) => {
+-            terminal_restore_guard.restore_silently();
+-            session_log::log_session_end();
+-            return Ok(AppExitInfo {
+-                token_usage: crate::token_usage::TokenUsage::default(),
+-                thread_id: None,
+-                resume_hint: None,
+-                update_action: None,
+-                exit_reason: ExitReason::UserRequested,
+-            });
+-        }
+-        Err(err) => {
+-            terminal_restore_guard.restore_silently();
+-            session_log::log_session_end();
+-            return Err(err);
++    let fallback_cwd = if let Some(cwd) = new_session_cwd.clone() {
++        Some(cwd)
++    } else {
++        match resolve_startup_resume_or_fork_cwd(
++            &mut tui,
++            &config,
++            state_db.as_deref(),
++            &session_selection,
++            cli.cwd.as_deref(),
++            uses_remote_workspace,
++            uses_remote_workspace_or_environment(&app_server_target, &environment_manager),
++        )
++        .await
++        {
++            Ok(ResolveCwdOutcome::Continue(cwd)) => cwd,
++            Ok(ResolveCwdOutcome::ContinueAfterPrompt(cwd)) => {
++                // Another daemon client can change authentication while this prompt is open.
++                startup_account = None;
++                Some(cwd)
++            }
++            Ok(ResolveCwdOutcome::Exit) => {
++                terminal_restore_guard.restore_silently();
++                session_log::log_session_end();
++                return Ok(AppExitInfo {
++                    token_usage: crate::token_usage::TokenUsage::default(),
++                    thread_id: None,
++                    resume_hint: None,
++                    update_action: None,
++                    exit_reason: ExitReason::UserRequested,
++                });
++            }
++            Err(err) => {
++                terminal_restore_guard.restore_silently();
++                session_log::log_session_end();
++                return Err(err);
++            }
+         }
+     };
+ 
+@@ -1507,42 +1513,61 @@ async fn run_ratatui_app(
+         return Err(err.into());
+     }
+ 
+-    let picker_cancelled_without_selection = matches!(
+-        session_selection,
+-        resume_picker::SessionSelection::StartFresh
+-    ) && (cli.resume_picker || cli.fork_picker);
++    let picker_cancelled_without_selection = new_session_cwd.is_none()
++        && matches!(
++            session_selection,
++            resume_picker::SessionSelection::StartFresh
++        )
++        && (cli.resume_picker || cli.fork_picker);
+ 
+-    let reloaded_config = match &session_selection {
+-        resume_picker::SessionSelection::Resume(_) | resume_picker::SessionSelection::Fork(_) => {
+-            startup_draft
+-                .run_until(
+-                    &mut tui,
+-                    load_config_or_exit_with_fallback_cwd(
+-                        cli_kv_overrides.clone(),
+-                        overrides.clone(),
+-                        loader_overrides.clone(),
+-                        cloud_config_bundle.clone(),
+-                        strict_config,
+-                        fallback_cwd,
+-                    ),
+-                )
+-                .await
+-        }
+-        resume_picker::SessionSelection::StartFresh if picker_cancelled_without_selection => {
+-            startup_draft
+-                .run_until(
+-                    &mut tui,
+-                    load_config_or_exit(
+-                        cli_kv_overrides.clone(),
+-                        overrides.clone(),
+-                        loader_overrides.clone(),
+-                        cloud_config_bundle.clone(),
+-                        strict_config,
+-                    ),
+-                )
+-                .await
++    let reloaded_config = if new_session_cwd.is_some() {
++        startup_draft
++            .run_until(
++                &mut tui,
++                load_config_or_exit_with_fallback_cwd(
++                    cli_kv_overrides.clone(),
++                    overrides.clone(),
++                    loader_overrides.clone(),
++                    cloud_config_bundle.clone(),
++                    strict_config,
++                    fallback_cwd,
++                ),
++            )
++            .await
++    } else {
++        match &session_selection {
++            resume_picker::SessionSelection::Resume(_)
++            | resume_picker::SessionSelection::Fork(_) => {
++                startup_draft
++                    .run_until(
++                        &mut tui,
++                        load_config_or_exit_with_fallback_cwd(
++                            cli_kv_overrides.clone(),
++                            overrides.clone(),
++                            loader_overrides.clone(),
++                            cloud_config_bundle.clone(),
++                            strict_config,
++                            fallback_cwd,
++                        ),
++                    )
++                    .await
++            }
++            resume_picker::SessionSelection::StartFresh if picker_cancelled_without_selection => {
++                startup_draft
++                    .run_until(
++                        &mut tui,
++                        load_config_or_exit(
++                            cli_kv_overrides.clone(),
++                            overrides.clone(),
++                            loader_overrides.clone(),
++                            cloud_config_bundle.clone(),
++                            strict_config,
++                        ),
++                    )
++                    .await
++            }
++            _ => Ok(config),
+         }
+-        _ => Ok(config),
+     };
+     let mut config = match reloaded_config {
+         Ok(config) => config,
+diff --git a/codex-rs/tui/src/resume_picker.rs b/codex-rs/tui/src/resume_picker.rs
+index 1f2f7d3e8..6f8e5ce55 100644
+--- a/codex-rs/tui/src/resume_picker.rs
++++ b/codex-rs/tui/src/resume_picker.rs
+@@ -75,7 +75,9 @@ use unicode_width::UnicodeWidthStr;
+ use uuid::Uuid;
+ 
+ mod archive;
++mod desktop_projects;
+ mod page_loading;
++mod project_browser;
+ 
+ use page_loading::PageLoadMode;
+ use page_loading::PaginationState;
+@@ -126,6 +128,11 @@ pub enum SessionSelection {
+     Exit,
+ }
+ 
++pub(crate) struct SessionPickerResult {
++    pub(crate) selection: SessionSelection,
++    pub(crate) new_session_cwd: Option<PathBuf>,
++}
++
+ #[derive(Clone, Copy, Debug)]
+ pub enum SessionPickerAction {
+     Resume,
+@@ -341,6 +348,7 @@ struct SessionPickerRunOptions {
+     list_keymap: ListKeymap,
+     initial_page_mode: PageLoadMode,
+     chord_keymap: Arc<RuntimeChordKeymap>,
++    allow_project_new_session: bool,
+ }
+ 
+ /// Interactive session picker that lists app-server threads with simple search,
+@@ -365,7 +373,7 @@ pub async fn run_resume_picker_with_app_server(
+     show_all: bool,
+     include_non_interactive: bool,
+     app_server: AppServerSession,
+-) -> Result<SessionSelection> {
++) -> Result<SessionPickerResult> {
+     let archive_request_handle = app_server.request_handle();
+     run_resume_picker_with_launch_context(
+         tui,
+@@ -388,7 +396,7 @@ pub async fn run_resume_picker_from_existing_session_with_app_server(
+     archive_request_handle: AppServerRequestHandle,
+     current_thread_id: Option<ThreadId>,
+ ) -> Result<SessionSelection> {
+-    run_resume_picker_with_launch_context(
++    Ok(run_resume_picker_with_launch_context(
+         tui,
+         config,
+         show_all,
+@@ -397,7 +405,8 @@ pub async fn run_resume_picker_from_existing_session_with_app_server(
+         archive_request_handle,
+         SessionPickerLaunchContext::ExistingSession { current_thread_id },
+     )
+-    .await
++    .await?
++    .selection)
+ }
+ 
+ async fn run_resume_picker_with_launch_context(
+@@ -408,7 +417,7 @@ async fn run_resume_picker_with_launch_context(
+     app_server: AppServerSession,
+     archive_request_handle: AppServerRequestHandle,
+     launch_context: SessionPickerLaunchContext,
+-) -> Result<SessionSelection> {
++) -> Result<SessionPickerResult> {
+     let (bg_tx, bg_rx) = mpsc::unbounded_channel();
+     let uses_remote_workspace = app_server.uses_remote_workspace();
+     let cwd_filter = picker_cwd_filter(
+@@ -439,6 +448,7 @@ async fn run_resume_picker_with_launch_context(
+             PageLoadMode::StateDbOnly
+         },
+         chord_keymap: runtime_keymap.chords,
++        allow_project_new_session: !uses_remote_workspace,
+     };
+     run_session_picker_with_loader(
+         tui,
+@@ -493,8 +503,9 @@ pub async fn run_fork_picker_with_app_server(
+             PageLoadMode::StateDbOnly
+         },
+         chord_keymap: runtime_keymap.chords,
++        allow_project_new_session: false,
+     };
+-    run_session_picker_with_loader(
++    Ok(run_session_picker_with_loader(
+         tui,
+         options,
+         spawn_app_server_page_loader(
+@@ -507,7 +518,8 @@ pub async fn run_fork_picker_with_app_server(
+         ),
+         bg_rx,
+     )
+-    .await
++    .await?
++    .selection)
+ }
+ 
+ async fn run_session_picker_with_loader(
+@@ -515,8 +527,11 @@ async fn run_session_picker_with_loader(
+     options: SessionPickerRunOptions,
+     picker_loader: PickerLoader,
+     bg_rx: mpsc::UnboundedReceiver<BackgroundEvent>,
+-) -> Result<SessionSelection> {
++) -> Result<SessionPickerResult> {
+     let alt = AltScreenGuard::enter(tui);
++    let project_browser = options.view_persistence.as_ref().map(|persistence| {
++        project_browser::ProjectBrowser::from_codex_home(options.action, &persistence.codex_home)
++    });
+     let mut state = PickerState::new(
+         alt.tui.frame_requester(),
+         picker_loader,
+@@ -533,6 +548,11 @@ async fn run_session_picker_with_loader(
+     state.chord_keymap = options.chord_keymap;
+     state.launch_context = options.launch_context;
+     state.initial_page_mode = options.initial_page_mode;
++    state.allow_project_new_session = options.allow_project_new_session;
++    if state.allow_project_new_session {
++        state.project_browser =
++            project_browser.unwrap_or_else(|| project_browser::ProjectBrowser::new(options.action));
++    }
+     state.start_initial_load();
+     state.request_frame();
+ 
+@@ -570,7 +590,10 @@ async fn run_session_picker_with_loader(
+                             continue;
+                         }
+                         if let Some(sel) = state.handle_key(key).await? {
+-                            return Ok(sel);
++                            return Ok(SessionPickerResult {
++                                selection: sel,
++                                new_session_cwd: state.new_session_cwd.take(),
++                            });
+                         }
+                     }
+                     TuiEvent::Paste(pasted) => {
+@@ -591,7 +614,10 @@ async fn run_session_picker_with_loader(
+             }
+             Some(event) = background_events.next() => {
+                 if let Some(selection) = state.handle_background_event(event).await? {
+-                    return Ok(selection);
++                    return Ok(SessionPickerResult {
++                        selection,
++                        new_session_cwd: state.new_session_cwd.take(),
++                    });
+                 }
+             }
+             else => break,
+@@ -599,7 +625,10 @@ async fn run_session_picker_with_loader(
+     }
+ 
+     // Fallback – treat as cancel/new
+-    Ok(SessionSelection::StartFresh)
++    Ok(SessionPickerResult {
++        selection: SessionSelection::StartFresh,
++        new_session_cwd: None,
++    })
+ }
+ 
+ fn raw_reasoning_visibility(config: &Config) -> RawReasoningVisibility {
+@@ -825,6 +854,9 @@ struct PickerState {
+     initial_page_mode: PageLoadMode,
+     chord_keymap: Arc<RuntimeChordKeymap>,
+     chord_matcher: crate::keymap::KeyChordMatcher,
++    project_browser: project_browser::ProjectBrowser,
++    allow_project_new_session: bool,
++    new_session_cwd: Option<PathBuf>,
+ }
+ 
+ #[derive(Clone, Copy, Debug)]
+@@ -1021,6 +1053,9 @@ impl PickerState {
+             initial_page_mode: PageLoadMode::StoreDefault,
+             chord_keymap: Arc::default(),
+             chord_matcher: crate::keymap::KeyChordMatcher::default(),
++            project_browser: project_browser::ProjectBrowser::default(),
++            allow_project_new_session: false,
++            new_session_cwd: None,
+         }
+     }
+ 
+@@ -1179,9 +1214,14 @@ impl PickerState {
+             }
+             _ if self.list_keymap.cancel.is_pressed(key) => {
+                 if self.query.is_empty() {
+-                    return Ok(Some(SessionSelection::StartFresh));
++                    if self.project_browser.back() {
++                        self.start_initial_load();
++                    } else {
++                        return Ok(Some(SessionSelection::StartFresh));
++                    }
++                } else {
++                    self.clear_query_preserving_selection();
+                 }
+-                self.clear_query_preserving_selection();
+             }
+             KeyEvent {
+                 code: KeyCode::Char('t'),
+@@ -1228,6 +1268,13 @@ impl PickerState {
+             _ if self.list_keymap.accept.is_pressed(key)
+                 && !matches!(self.archive_state, archive::ArchiveState::Idle) => {}
+             _ if self.list_keymap.accept.is_pressed(key) => {
++                if let Some(cwd) = self.selected_new_session_cwd() {
++                    self.new_session_cwd = Some(cwd);
++                    return Ok(Some(SessionSelection::StartFresh));
++                }
++                if self.open_selected_project() {
++                    return Ok(None);
++                }
+                 if let Some(row) = self.filtered_rows.get(self.selected) {
+                     let path = row.path.clone();
+                     let thread_id = match row.thread_id {
+@@ -1326,6 +1373,17 @@ impl PickerState {
+                 self.focus_previous_toolbar_control();
+                 self.request_frame();
+             }
++            _ if allow_plain_char_navigation
++                && self.list_keymap.move_left.is_pressed(key)
++                && self.project_browser.back() =>
++            {
++                self.query.clear();
++                self.start_initial_load();
++            }
++            _ if allow_plain_char_navigation
++                && self.list_keymap.move_right.is_pressed(key)
++                && self.open_selected_project() =>
++            {}
+             _ if allow_plain_char_navigation
+                 && (self.list_keymap.move_left.is_pressed(key)
+                     || self.list_keymap.move_right.is_pressed(key)) =>
+@@ -1364,6 +1422,23 @@ impl PickerState {
+         Ok(None)
+     }
+ 
++    fn open_selected_project(&mut self) -> bool {
++        if self.filtered_rows.get(self.selected).is_none() {
++            return false;
++        }
++        if !self.project_browser.enter(self.selected) {
++            return false;
++        }
++        self.query.clear();
++        self.start_initial_load();
++        true
++    }
++
++    fn selected_new_session_cwd(&self) -> Option<PathBuf> {
++        let row = self.filtered_rows.get(self.selected)?;
++        self.project_browser.new_session_cwd(row)
++    }
++
+     fn handle_paste(&mut self, pasted: String) {
+         if self.is_transcript_loading() {
+             return;
+@@ -1565,12 +1640,27 @@ impl PickerState {
+             .all_rows
+             .iter()
+             .filter(|row| self.row_matches_filter(row));
+-        if self.query.is_empty() {
+-            self.filtered_rows = base_iter.cloned().collect();
++        let matching_rows = if self.query.is_empty() {
++            base_iter.cloned().collect::<Vec<_>>()
+         } else {
+             let q = self.query.to_lowercase();
+-            self.filtered_rows = base_iter.filter(|r| r.matches_query(&q)).cloned().collect();
+-        }
++            base_iter
++                .filter(|row| row.matches_query(&q))
++                .cloned()
++                .collect::<Vec<_>>()
++        };
++        self.filtered_rows = if self.project_browser.is_overview() {
++            self.project_browser.overview_rows(matching_rows.iter())
++        } else if self.project_browser.is_inside_project() {
++            let include_new_session = self.allow_project_new_session
++                && self.launch_context == SessionPickerLaunchContext::Startup
++                && self.status == SessionStatus::Active
++                && self.query.is_empty();
++            self.project_browser
++                .project_rows(matching_rows, include_new_session)
++        } else {
++            matching_rows
++        };
+         if self.selected >= self.filtered_rows.len() {
+             self.selected = self.filtered_rows.len().saturating_sub(1);
+         }
+@@ -1582,6 +1672,9 @@ impl PickerState {
+     }
+ 
+     fn row_matches_filter(&self, row: &Row) -> bool {
++        if self.project_browser.is_enabled() {
++            return true;
++        }
+         if self.filter_mode == SessionFilterMode::All {
+             return true;
+         }
+@@ -1782,6 +1875,9 @@ impl PickerState {
+     }
+ 
+     fn toggle_filter_mode(&mut self) {
++        if self.project_browser.is_enabled() {
++            return;
++        }
+         let next_filter_mode = self.filter_mode.toggle(self.filter_cwd.as_deref());
+         if self.filter_mode == next_filter_mode {
+             return;
+@@ -1799,6 +1895,12 @@ impl PickerState {
+     }
+ 
+     fn active_cwd_filter(&self) -> Option<PathBuf> {
++        if self.project_browser.is_enabled() {
++            return self
++                .project_browser
++                .server_cwd_filter()
++                .map(Path::to_path_buf);
++        }
+         match self.filter_mode {
+             SessionFilterMode::Cwd => self.filter_cwd.clone(),
+             SessionFilterMode::All => None,
+@@ -2039,10 +2141,14 @@ fn draw_picker(tui: &mut Tui, state: &PickerState, screen_size: Size) -> std::io
+         };
+ 
+         // Header
++        let header_text = match state.project_browser.selected_label() {
++            Some(project) => format!("{}  ›  {project}", state.action.title()),
++            None => state.action.title().to_string(),
++        };
+         let header_title = if default_bg().is_some_and(is_light) {
+-            state.action.title().bold().fg(best_color((0, 100, 0)))
++            header_text.bold().fg(best_color((0, 100, 0)))
+         } else {
+-            state.action.title().bold().cyan()
++            header_text.bold().cyan()
+         };
+         let header_line: Line = vec![header_title].into();
+         frame.render_widget_ref(&header_line, chrome(header));
+@@ -2176,6 +2282,17 @@ fn sort_control_spans(state: &PickerState, compact: bool) -> Vec<Span<'static>>
+ 
+ fn filter_control_spans(state: &PickerState, compact: bool) -> Vec<Span<'static>> {
+     let filter_focused = state.toolbar_focus == ToolbarControl::Filter;
++    if state.project_browser.is_enabled() {
++        let label = if state.project_browser.is_overview() {
++            "Projects"
++        } else {
++            "Project"
++        };
++        return vec![
++            "View:".dim(),
++            toolbar_value(label, /*active*/ true, filter_focused),
++        ];
++    }
+     if compact || state.filter_cwd.is_none() {
+         return vec![
+             "Filter:".dim(),
+@@ -2365,19 +2482,34 @@ fn footer_hint_lines(state: &PickerState, width: u16) -> Vec<Line<'static>> {
+         return vec![line, Line::default()];
+     }
+ 
+-    let action_label = if state.status == SessionStatus::Archived {
++    let selected_is_project = state
++        .filtered_rows
++        .get(state.selected)
++        .is_some_and(project_browser::is_project_row);
++    let selected_is_new_session = state
++        .filtered_rows
++        .get(state.selected)
++        .is_some_and(project_browser::is_new_session_row);
++    let action_label = if selected_is_new_session {
++        "start"
++    } else if selected_is_project {
++        "open"
++    } else if state.status == SessionStatus::Archived {
+         "restore"
+     } else {
+         state.action.action_label()
+     };
+-    let (esc_label, esc_compact_label) = if state.query.is_empty() {
+-        match state.launch_context {
+-            SessionPickerLaunchContext::Startup => ("start new", "new"),
+-            SessionPickerLaunchContext::ExistingSession { .. } => ("exit", "exit"),
+-        }
+-    } else {
+-        ("clear search", "clear")
+-    };
++    let (esc_label, esc_compact_label) =
++        if state.query.is_empty() && state.project_browser.is_inside_project() {
++            ("projects", "back")
++        } else if state.query.is_empty() {
++            match state.launch_context {
++                SessionPickerLaunchContext::Startup => ("start new", "new"),
++                SessionPickerLaunchContext::ExistingSession { .. } => ("exit", "exit"),
++            }
++        } else {
++            ("clear search", "clear")
++        };
+     let ctrl_c_label = match state.launch_context {
+         SessionPickerLaunchContext::Startup => "quit",
+         SessionPickerLaunchContext::ExistingSession { .. } => "exit",
+@@ -2747,6 +2879,9 @@ fn render_session_lines(
+     is_zebra: bool,
+     width: u16,
+ ) -> Vec<Line<'static>> {
++    if project_browser::is_project_row(row) || project_browser::is_new_session_row(row) {
++        return render_project_lines(row, is_selected, is_zebra, width);
++    }
+     match state.density {
+         SessionListDensity::Comfortable => {
+             render_comfortable_session_lines(row, state, is_selected, is_expanded, is_zebra, width)
+@@ -2757,6 +2892,47 @@ fn render_session_lines(
+     }
+ }
+ 
++fn render_project_lines(
++    row: &Row,
++    is_selected: bool,
++    is_zebra: bool,
++    width: u16,
++) -> Vec<Line<'static>> {
++    let marker = selection_marker(is_selected, /*is_expanded*/ false);
++    let title = truncate_text(row.display_preview(), width.saturating_sub(2) as usize);
++    let title = if is_selected {
++        selected_session_title_span(title)
++    } else {
++        title.into()
++    };
++    let cwd = row
++        .cwd
++        .as_ref()
++        .map(|path| {
++            format_directory_display(
++                path,
++                /*max_width*/ Some(usize::from(width.saturating_sub(4))),
++            )
++        })
++        .unwrap_or_default();
++    let mut lines = vec![Line::from(vec![marker, title])];
++    if !cwd.is_empty() {
++        lines.push(vec!["  ".into(), cwd.dim()].into());
++    }
++    let style = if is_selected {
++        Some(dense_selected_style())
++    } else if is_zebra {
++        Some(dense_zebra_style())
++    } else {
++        None
++    };
++    if let Some(style) = style {
++        apply_session_row_background(lines, style, width)
++    } else {
++        lines
++    }
++}
++
+ fn render_comfortable_session_lines(
+     row: &Row,
+     state: &PickerState,
+diff --git a/codex-rs/tui/src/resume_picker/archive.rs b/codex-rs/tui/src/resume_picker/archive.rs
+index 41f065929..e59cfeb5b 100644
+--- a/codex-rs/tui/src/resume_picker/archive.rs
++++ b/codex-rs/tui/src/resume_picker/archive.rs
+@@ -36,7 +36,10 @@ impl PickerState {
+         }
+ 
+         let archive_key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
+-        self.list_keymap.action_for(archive_key).is_none()
++        self.filtered_rows
++            .get(self.selected)
++            .is_some_and(|row| row.thread_id.is_some())
++            && self.list_keymap.action_for(archive_key).is_none()
+             && !self.chord_keymap.bindings.iter().any(|binding| {
+                 binding.action.context == KeymapContext::List
+                     && binding.chord.prefix.is_press(archive_key)
+diff --git a/codex-rs/tui/src/resume_picker/desktop_projects.rs b/codex-rs/tui/src/resume_picker/desktop_projects.rs
+new file mode 100644
+index 000000000..1c6817e21
+--- /dev/null
++++ b/codex-rs/tui/src/resume_picker/desktop_projects.rs
+@@ -0,0 +1,185 @@
++use std::collections::HashMap;
++use std::collections::HashSet;
++use std::fs;
++use std::path::Path;
++use std::path::PathBuf;
++
++use chrono::DateTime;
++use chrono::Utc;
++use serde::Deserialize;
++
++const DESKTOP_STATE_FILE: &str = ".codex-global-state.json";
++const MAX_DESKTOP_STATE_BYTES: u64 = 16 * 1024 * 1024;
++
++#[derive(Clone, Debug, Eq, PartialEq)]
++pub(super) struct DesktopProject {
++    pub(super) id: String,
++    pub(super) name: String,
++    pub(super) root_paths: Vec<PathBuf>,
++    pub(super) created_at: Option<DateTime<Utc>>,
++    pub(super) updated_at: Option<DateTime<Utc>>,
++}
++
++#[derive(Default)]
++pub(super) struct DesktopProjectIndex {
++    projects: HashMap<String, DesktopProject>,
++    project_order: Vec<String>,
++    thread_project_ids: HashMap<String, String>,
++    assigned_thread_ids: HashSet<String>,
++    root_project_ids: HashMap<PathBuf, Option<String>>,
++}
++
++#[derive(Default, Deserialize)]
++#[serde(default)]
++struct DesktopState {
++    #[serde(rename = "local-projects")]
++    local_projects: HashMap<String, DesktopProjectRecord>,
++    #[serde(rename = "project-order")]
++    project_order: Vec<String>,
++    #[serde(rename = "thread-project-assignments")]
++    thread_project_assignments: HashMap<String, DesktopProjectAssignment>,
++}
++
++#[derive(Default, Deserialize)]
++#[serde(default, rename_all = "camelCase")]
++struct DesktopProjectRecord {
++    id: String,
++    name: String,
++    root_paths: Vec<PathBuf>,
++    created_at: Option<i64>,
++    updated_at: Option<i64>,
++}
++
++#[derive(Default, Deserialize)]
++#[serde(default, rename_all = "camelCase")]
++struct DesktopProjectAssignment {
++    project_kind: String,
++    project_id: String,
++}
++
++impl DesktopProjectIndex {
++    pub(super) fn load(codex_home: &Path) -> Self {
++        let state_path = codex_home.join(DESKTOP_STATE_FILE);
++        let backup_path = state_path.with_extension("json.bak");
++        [state_path, backup_path]
++            .into_iter()
++            .find_map(|path| load_state(&path))
++            .map(Self::from_state)
++            .unwrap_or_default()
++    }
++
++    pub(super) fn project(&self, project_id: &str) -> Option<&DesktopProject> {
++        self.projects.get(project_id)
++    }
++
++    pub(super) fn projects_in_order(&self) -> impl Iterator<Item = &DesktopProject> {
++        self.project_order
++            .iter()
++            .filter_map(|project_id| self.projects.get(project_id))
++    }
++
++    pub(super) fn project_id_for_thread(&self, thread_id: &str) -> Option<&str> {
++        self.thread_project_ids.get(thread_id).map(String::as_str)
++    }
++
++    pub(super) fn thread_has_assignment(&self, thread_id: &str) -> bool {
++        self.assigned_thread_ids.contains(thread_id)
++    }
++
++    pub(super) fn project_id_for_root(&self, root_path: &Path) -> Option<&str> {
++        self.root_project_ids
++            .get(root_path)
++            .and_then(Option::as_deref)
++    }
++
++    fn from_state(state: DesktopState) -> Self {
++        let projects = state
++            .local_projects
++            .into_iter()
++            .map(|(project_id, project)| {
++                let id = if project.id.is_empty() {
++                    project_id
++                } else {
++                    project.id
++                };
++                (
++                    id.clone(),
++                    DesktopProject {
++                        id,
++                        name: project.name,
++                        root_paths: project.root_paths,
++                        created_at: project.created_at.and_then(DateTime::from_timestamp_millis),
++                        updated_at: project.updated_at.and_then(DateTime::from_timestamp_millis),
++                    },
++                )
++            })
++            .collect::<HashMap<_, _>>();
++
++        let mut seen_project_ids = HashSet::new();
++        let mut project_order = state
++            .project_order
++            .into_iter()
++            .filter(|project_id| {
++                projects.contains_key(project_id) && seen_project_ids.insert(project_id.clone())
++            })
++            .collect::<Vec<_>>();
++        let mut remaining_project_ids = projects
++            .keys()
++            .filter(|project_id| !seen_project_ids.contains(*project_id))
++            .cloned()
++            .collect::<Vec<_>>();
++        remaining_project_ids.sort_by(|left, right| {
++            projects[left]
++                .name
++                .cmp(&projects[right].name)
++                .then_with(|| left.cmp(right))
++        });
++        project_order.extend(remaining_project_ids);
++
++        let mut assigned_thread_ids = HashSet::new();
++        let thread_project_ids = state
++            .thread_project_assignments
++            .into_iter()
++            .filter_map(|(thread_id, assignment)| {
++                assigned_thread_ids.insert(thread_id.clone());
++                (assignment.project_kind == "local"
++                    && projects.contains_key(&assignment.project_id))
++                .then_some((thread_id, assignment.project_id))
++            })
++            .collect();
++
++        let mut root_project_ids = HashMap::<PathBuf, Option<String>>::new();
++        for project in projects.values() {
++            for root_path in &project.root_paths {
++                root_project_ids
++                    .entry(root_path.clone())
++                    .and_modify(|project_id| {
++                        if project_id.as_deref() != Some(project.id.as_str()) {
++                            *project_id = None;
++                        }
++                    })
++                    .or_insert_with(|| Some(project.id.clone()));
++            }
++        }
++
++        Self {
++            projects,
++            project_order,
++            thread_project_ids,
++            assigned_thread_ids,
++            root_project_ids,
++        }
++    }
++}
++
++fn load_state(path: &Path) -> Option<DesktopState> {
++    let metadata = fs::metadata(path).ok()?;
++    if metadata.len() > MAX_DESKTOP_STATE_BYTES {
++        return None;
++    }
++    serde_json::from_slice(&fs::read(path).ok()?).ok()
++}
++
++#[cfg(test)]
++#[path = "desktop_projects_tests.rs"]
++mod tests;
+diff --git a/codex-rs/tui/src/resume_picker/desktop_projects_tests.rs b/codex-rs/tui/src/resume_picker/desktop_projects_tests.rs
+new file mode 100644
+index 000000000..ea79b26e5
+--- /dev/null
++++ b/codex-rs/tui/src/resume_picker/desktop_projects_tests.rs
+@@ -0,0 +1,130 @@
++use std::fs;
++use std::path::PathBuf;
++
++use pretty_assertions::assert_eq;
++use serde_json::json;
++use tempfile::tempdir;
++
++use super::DesktopProjectIndex;
++
++#[test]
++fn loads_projects_assignments_and_project_order() {
++    let codex_home = tempdir().expect("tempdir");
++    fs::write(
++        codex_home.path().join(".codex-global-state.json"),
++        serde_json::to_vec(&json!({
++            "local-projects": {
++                "project-a": {
++                    "id": "project-a",
++                    "name": "Alpha",
++                    "rootPaths": ["/work/alpha", "/work/shared"],
++                    "createdAt": 1_700_000_000_000_i64,
++                    "updatedAt": 1_700_000_001_000_i64
++                },
++                "project-b": {
++                    "id": "project-b",
++                    "name": "Beta",
++                    "rootPaths": []
++                }
++            },
++            "project-order": ["project-b", "project-a"],
++            "thread-project-assignments": {
++                "thread-a": {"projectKind": "local", "projectId": "project-a"},
++                "thread-remote": {"projectKind": "remote", "projectId": "project-a"},
++                "thread-missing": {"projectKind": "local", "projectId": "missing"}
++            }
++        }))
++        .expect("serialize state"),
++    )
++    .expect("write state");
++
++    let index = DesktopProjectIndex::load(codex_home.path());
++    let projects = index.projects_in_order().cloned().collect::<Vec<_>>();
++
++    assert_eq!(
++        projects
++            .iter()
++            .map(|project| project.id.as_str())
++            .collect::<Vec<_>>(),
++        vec!["project-b", "project-a"]
++    );
++    assert_eq!(
++        projects[1].root_paths,
++        vec![PathBuf::from("/work/alpha"), PathBuf::from("/work/shared")]
++    );
++    assert_eq!(index.project_id_for_thread("thread-a"), Some("project-a"));
++    assert_eq!(index.project_id_for_thread("thread-remote"), None);
++    assert_eq!(index.project_id_for_thread("thread-missing"), None);
++    assert!(index.thread_has_assignment("thread-remote"));
++    assert!(index.thread_has_assignment("thread-missing"));
++    assert_eq!(
++        index.project_id_for_root(PathBuf::from("/work/shared").as_path()),
++        Some("project-a")
++    );
++}
++
++#[test]
++fn shared_root_path_is_not_assigned_to_one_project() {
++    let codex_home = tempdir().expect("tempdir");
++    fs::write(
++        codex_home.path().join(".codex-global-state.json"),
++        serde_json::to_vec(&json!({
++            "local-projects": {
++                "project-a": {"id": "project-a", "rootPaths": ["/work/shared"]},
++                "project-b": {"id": "project-b", "rootPaths": ["/work/shared"]}
++            }
++        }))
++        .expect("serialize state"),
++    )
++    .expect("write state");
++
++    let index = DesktopProjectIndex::load(codex_home.path());
++
++    assert_eq!(
++        index.project_id_for_root(PathBuf::from("/work/shared").as_path()),
++        None
++    );
++}
++
++#[test]
++fn falls_back_to_backup_when_primary_state_is_invalid() {
++    let codex_home = tempdir().expect("tempdir");
++    fs::write(
++        codex_home.path().join(".codex-global-state.json"),
++        b"not json",
++    )
++    .expect("write invalid state");
++    fs::write(
++        codex_home.path().join(".codex-global-state.json.bak"),
++        serde_json::to_vec(&json!({
++            "local-projects": {
++                "project-a": {
++                    "id": "project-a",
++                    "name": "Recovered",
++                    "rootPaths": ["/work/recovered"]
++                }
++            }
++        }))
++        .expect("serialize backup"),
++    )
++    .expect("write backup");
++
++    let index = DesktopProjectIndex::load(codex_home.path());
++
++    assert_eq!(
++        index
++            .project("project-a")
++            .map(|project| project.name.as_str()),
++        Some("Recovered")
++    );
++}
++
++#[test]
++fn missing_state_uses_an_empty_index() {
++    let codex_home = tempdir().expect("tempdir");
++
++    let index = DesktopProjectIndex::load(codex_home.path());
++
++    assert_eq!(index.projects_in_order().count(), 0);
++    assert_eq!(index.project_id_for_thread("thread-a"), None);
++}
+diff --git a/codex-rs/tui/src/resume_picker/project_browser.rs b/codex-rs/tui/src/resume_picker/project_browser.rs
+new file mode 100644
+index 000000000..7206566c6
+--- /dev/null
++++ b/codex-rs/tui/src/resume_picker/project_browser.rs
+@@ -0,0 +1,308 @@
++use std::collections::HashMap;
++use std::path::Path;
++use std::path::PathBuf;
++
++use chrono::DateTime;
++use chrono::Utc;
++
++use super::Row;
++use super::SessionPickerAction;
++use super::desktop_projects::DesktopProjectIndex;
++use crate::status::format_directory_display;
++
++const NEW_SESSION_PREVIEW: &str = "＋ 새 대화 시작";
++
++#[derive(Default)]
++pub(super) struct ProjectBrowser {
++    enabled: bool,
++    desktop_projects: DesktopProjectIndex,
++    overview_projects: Vec<Option<SelectedProject>>,
++    selected_project: Option<SelectedProject>,
++}
++
++#[derive(Clone)]
++struct SelectedProject {
++    key: ProjectKey,
++    cwd: Option<PathBuf>,
++    label: String,
++}
++
++#[derive(Clone, Debug, Eq, Hash, PartialEq)]
++enum ProjectKey {
++    Desktop(String),
++    WorkingDirectory(PathBuf),
++}
++
++enum OverviewEntry {
++    Project(ProjectGroup),
++    Session(Row),
++}
++
++struct ProjectGroup {
++    key: ProjectKey,
++    cwd: Option<PathBuf>,
++    label: String,
++    session_count: usize,
++    created_at: Option<DateTime<Utc>>,
++    updated_at: Option<DateTime<Utc>>,
++}
++
++impl ProjectBrowser {
++    pub(super) fn new(action: SessionPickerAction) -> Self {
++        Self {
++            enabled: matches!(action, SessionPickerAction::Resume),
++            desktop_projects: DesktopProjectIndex::default(),
++            overview_projects: Vec::new(),
++            selected_project: None,
++        }
++    }
++
++    pub(super) fn from_codex_home(action: SessionPickerAction, codex_home: &Path) -> Self {
++        Self {
++            enabled: matches!(action, SessionPickerAction::Resume),
++            desktop_projects: DesktopProjectIndex::load(codex_home),
++            overview_projects: Vec::new(),
++            selected_project: None,
++        }
++    }
++
++    pub(super) fn is_enabled(&self) -> bool {
++        self.enabled
++    }
++
++    pub(super) fn is_overview(&self) -> bool {
++        self.enabled && self.selected_project.is_none()
++    }
++
++    pub(super) fn is_inside_project(&self) -> bool {
++        self.selected_project.is_some()
++    }
++
++    pub(super) fn selected_cwd(&self) -> Option<&Path> {
++        self.selected_project
++            .as_ref()
++            .and_then(|project| project.cwd.as_deref())
++    }
++
++    pub(super) fn server_cwd_filter(&self) -> Option<&Path> {
++        let project = self.selected_project.as_ref()?;
++        match &project.key {
++            ProjectKey::Desktop(_) => None,
++            ProjectKey::WorkingDirectory(_) => project.cwd.as_deref(),
++        }
++    }
++
++    pub(super) fn selected_label(&self) -> Option<&str> {
++        self.selected_project
++            .as_ref()
++            .map(|project| project.label.as_str())
++    }
++
++    pub(super) fn enter(&mut self, row_index: usize) -> bool {
++        if !self.is_overview() {
++            return false;
++        }
++        let Some(project) = self.overview_projects.get(row_index).cloned().flatten() else {
++            return false;
++        };
++        self.selected_project = Some(project);
++        true
++    }
++
++    pub(super) fn back(&mut self) -> bool {
++        self.selected_project.take().is_some()
++    }
++
++    pub(super) fn overview_rows<'a>(&mut self, rows: impl Iterator<Item = &'a Row>) -> Vec<Row> {
++        let mut entries = Vec::<OverviewEntry>::new();
++        let mut project_positions = HashMap::<ProjectKey, usize>::new();
++
++        for project in self.desktop_projects.projects_in_order() {
++            let key = ProjectKey::Desktop(project.id.clone());
++            project_positions.insert(key.clone(), entries.len());
++            entries.push(OverviewEntry::Project(ProjectGroup {
++                key,
++                cwd: project.root_paths.first().cloned(),
++                label: desktop_project_label(
++                    &project.name,
++                    project.root_paths.first().map(PathBuf::as_path),
++                    &project.id,
++                ),
++                session_count: 0,
++                created_at: project.created_at,
++                updated_at: project.updated_at,
++            }));
++        }
++
++        for row in rows {
++            let Some(key) = self.project_key(row) else {
++                entries.push(OverviewEntry::Session(row.clone()));
++                continue;
++            };
++
++            if let Some(position) = project_positions.get(&key).copied() {
++                let OverviewEntry::Project(project) = &mut entries[position] else {
++                    continue;
++                };
++                project.session_count = project.session_count.saturating_add(1);
++                project.created_at = latest(project.created_at, row.created_at);
++                project.updated_at = latest(project.updated_at, row.updated_at);
++                continue;
++            }
++
++            let ProjectKey::WorkingDirectory(cwd) = &key else {
++                continue;
++            };
++            let cwd = cwd.clone();
++            project_positions.insert(key.clone(), entries.len());
++            entries.push(OverviewEntry::Project(ProjectGroup {
++                key,
++                cwd: Some(cwd.clone()),
++                label: project_label(&cwd),
++                session_count: 1,
++                created_at: row.created_at,
++                updated_at: row.updated_at,
++            }));
++        }
++
++        self.overview_projects.clear();
++        entries
++            .into_iter()
++            .map(|entry| match entry {
++                OverviewEntry::Project(project) => {
++                    self.overview_projects.push(Some(project.selection()));
++                    project.into_row()
++                }
++                OverviewEntry::Session(row) => {
++                    self.overview_projects.push(None);
++                    row
++                }
++            })
++            .collect()
++    }
++
++    pub(super) fn project_rows(&self, rows: Vec<Row>, include_new_session: bool) -> Vec<Row> {
++        let Some(project) = self.selected_project.as_ref() else {
++            return rows;
++        };
++        let mut project_rows = rows
++            .into_iter()
++            .filter(|row| self.project_key(row).as_ref() == Some(&project.key))
++            .collect::<Vec<_>>();
++        if include_new_session && let Some(cwd) = project.cwd.as_ref() {
++            project_rows.insert(
++                0,
++                Row {
++                    path: None,
++                    preview: NEW_SESSION_PREVIEW.to_string(),
++                    thread_id: None,
++                    thread_name: None,
++                    created_at: None,
++                    updated_at: None,
++                    cwd: Some(cwd.clone()),
++                    git_branch: None,
++                },
++            );
++        }
++        project_rows
++    }
++
++    pub(super) fn new_session_cwd(&self, row: &Row) -> Option<PathBuf> {
++        if !self.is_inside_project() || !is_new_session_row(row) {
++            return None;
++        }
++        let selected_cwd = self.selected_cwd()?;
++        let row_cwd = row.cwd.as_deref()?;
++        (row_cwd == selected_cwd).then(|| selected_cwd.to_path_buf())
++    }
++
++    fn project_key(&self, row: &Row) -> Option<ProjectKey> {
++        if let Some(thread_id) = row.thread_id {
++            let thread_id = thread_id.to_string();
++            if let Some(project_id) = self.desktop_projects.project_id_for_thread(&thread_id)
++                && self.desktop_projects.project(project_id).is_some()
++            {
++                return Some(ProjectKey::Desktop(project_id.to_string()));
++            }
++            if self.desktop_projects.thread_has_assignment(&thread_id) {
++                return row.cwd.as_ref().cloned().map(ProjectKey::WorkingDirectory);
++            }
++        }
++        let cwd = row.cwd.as_ref()?;
++        self.desktop_projects
++            .project_id_for_root(cwd)
++            .map(|project_id| ProjectKey::Desktop(project_id.to_string()))
++            .or_else(|| Some(ProjectKey::WorkingDirectory(cwd.clone())))
++    }
++}
++
++impl ProjectGroup {
++    fn selection(&self) -> SelectedProject {
++        SelectedProject {
++            key: self.key.clone(),
++            cwd: self.cwd.clone(),
++            label: self.label.clone(),
++        }
++    }
++
++    fn into_row(self) -> Row {
++        let session_label = if self.session_count == 1 {
++            "session"
++        } else {
++            "sessions"
++        };
++        Row {
++            path: None,
++            preview: format!(
++                "▸ {}  ·  {} {session_label}",
++                self.label, self.session_count
++            ),
++            thread_id: None,
++            thread_name: None,
++            created_at: self.created_at,
++            updated_at: self.updated_at,
++            cwd: self.cwd,
++            git_branch: None,
++        }
++    }
++}
++
++pub(super) fn is_project_row(row: &Row) -> bool {
++    !is_new_session_row(row) && row.path.is_none() && row.thread_id.is_none()
++}
++
++pub(super) fn is_new_session_row(row: &Row) -> bool {
++    row.path.is_none()
++        && row.thread_id.is_none()
++        && row.cwd.is_some()
++        && row.preview == NEW_SESSION_PREVIEW
++}
++
++fn project_label(cwd: &Path) -> String {
++    cwd.file_name()
++        .and_then(|name| name.to_str())
++        .filter(|name| !name.is_empty())
++        .map(str::to_string)
++        .unwrap_or_else(|| format_directory_display(cwd, /*max_width*/ None))
++}
++
++fn desktop_project_label(name: &str, cwd: Option<&Path>, project_id: &str) -> String {
++    let name = name.trim();
++    if !name.is_empty() {
++        return name.to_string();
++    }
++    cwd.map(project_label)
++        .unwrap_or_else(|| project_id.to_string())
++}
++
++fn latest(left: Option<DateTime<Utc>>, right: Option<DateTime<Utc>>) -> Option<DateTime<Utc>> {
++    match (left, right) {
++        (Some(left), Some(right)) => Some(left.max(right)),
++        (Some(value), None) | (None, Some(value)) => Some(value),
++        (None, None) => None,
++    }
++}
++
++#[cfg(test)]
++#[path = "project_browser_tests.rs"]
++mod tests;
+diff --git a/codex-rs/tui/src/resume_picker/project_browser_tests.rs b/codex-rs/tui/src/resume_picker/project_browser_tests.rs
+new file mode 100644
+index 000000000..eb7046ad2
+--- /dev/null
++++ b/codex-rs/tui/src/resume_picker/project_browser_tests.rs
+@@ -0,0 +1,322 @@
++use std::fs;
++use std::path::Path;
++use std::path::PathBuf;
++use std::sync::Arc;
++
++use chrono::TimeZone;
++use chrono::Utc;
++use crossterm::event::KeyCode;
++use crossterm::event::KeyEvent;
++use crossterm::event::KeyModifiers;
++use pretty_assertions::assert_eq;
++use ratatui::layout::Rect;
++use serde_json::json;
++use tempfile::TempDir;
++use tempfile::tempdir;
++
++use super::ProjectBrowser;
++use super::is_new_session_row;
++use super::is_project_row;
++use crate::custom_terminal::Terminal;
++use crate::resume_picker::PickerLoader;
++use crate::resume_picker::PickerState;
++use crate::resume_picker::ProviderFilter;
++use crate::resume_picker::Row;
++use crate::resume_picker::SessionPickerAction;
++use crate::resume_picker::SessionSelection;
++use crate::resume_picker::render_list;
++use crate::test_backend::VT100Backend;
++use crate::tui::FrameRequester;
++use codex_protocol::ThreadId;
++
++fn row(path: &str, cwd: Option<&str>, preview: &str, updated_at: i64) -> Row {
++    let timestamp = Utc.timestamp_opt(updated_at, 0).single();
++    Row {
++        path: Some(PathBuf::from(path)),
++        preview: preview.to_string(),
++        thread_id: None,
++        thread_name: None,
++        created_at: timestamp,
++        updated_at: timestamp,
++        cwd: cwd.map(PathBuf::from),
++        git_branch: None,
++    }
++}
++
++fn thread_row(thread_id: ThreadId, cwd: &str, preview: &str, updated_at: i64) -> Row {
++    let path = format!("/tmp/{thread_id}.jsonl");
++    let mut row = row(&path, Some(cwd), preview, updated_at);
++    row.thread_id = Some(thread_id);
++    row
++}
++
++fn desktop_project_browser(
++    thread_ids: &[ThreadId],
++    name: &str,
++    root_paths: &[&str],
++) -> (TempDir, ProjectBrowser) {
++    let codex_home = tempdir().expect("tempdir");
++    let assignments = thread_ids
++        .iter()
++        .map(|thread_id| {
++            (
++                thread_id.to_string(),
++                json!({"projectKind": "local", "projectId": "desktop-project"}),
++            )
++        })
++        .collect::<serde_json::Map<_, _>>();
++    fs::write(
++        codex_home.path().join(".codex-global-state.json"),
++        serde_json::to_vec(&json!({
++            "local-projects": {
++                "desktop-project": {
++                    "id": "desktop-project",
++                    "name": name,
++                    "rootPaths": root_paths
++                }
++            },
++            "project-order": ["desktop-project"],
++            "thread-project-assignments": assignments
++        }))
++        .expect("serialize state"),
++    )
++    .expect("write state");
++    let browser = ProjectBrowser::from_codex_home(SessionPickerAction::Resume, codex_home.path());
++    (codex_home, browser)
++}
++
++fn project_state() -> PickerState {
++    let loader: PickerLoader = Arc::new(|_| {});
++    let mut state = PickerState::new(
++        FrameRequester::test_dummy(),
++        loader,
++        ProviderFilter::MatchDefault(String::from("openai")),
++        /*show_all*/ true,
++        /*filter_cwd*/ None,
++        SessionPickerAction::Resume,
++    );
++    state.project_browser = ProjectBrowser::new(SessionPickerAction::Resume);
++    state.all_rows = vec![
++        row("/tmp/a.jsonl", Some("/work/alpha"), "First", 30),
++        row("/tmp/b.jsonl", Some("/work/alpha"), "Second", 20),
++        row("/tmp/c.jsonl", Some("/work/beta"), "Third", 10),
++    ];
++    state.apply_filter();
++    let project = state.filtered_rows[0].clone();
++    assert!(is_project_row(&project));
++    assert!(state.project_browser.enter(0));
++    state
++        .all_rows
++        .retain(|row| row.cwd.as_deref() == Some(Path::new("/work/alpha")));
++    state.allow_project_new_session = true;
++    state.apply_filter();
++    state
++}
++
++#[test]
++fn overview_groups_sessions_by_working_directory() {
++    let mut browser = ProjectBrowser::new(SessionPickerAction::Resume);
++    let rows = [
++        row("/tmp/a.jsonl", Some("/work/alpha"), "First", 30),
++        row("/tmp/b.jsonl", Some("/work/beta"), "Second", 20),
++        row("/tmp/c.jsonl", Some("/work/alpha"), "Third", 10),
++        row("/tmp/d.jsonl", None, "Unscoped", 5),
++    ];
++
++    let overview = browser.overview_rows(rows.iter());
++
++    assert_eq!(overview.len(), 3);
++    assert!(is_project_row(&overview[0]));
++    assert_eq!(overview[0].display_preview(), "▸ alpha  ·  2 sessions");
++    assert!(is_project_row(&overview[1]));
++    assert_eq!(overview[1].display_preview(), "▸ beta  ·  1 session");
++    assert_eq!(overview[2].display_preview(), "Unscoped");
++}
++
++#[test]
++fn project_rows_start_with_new_session_action() {
++    let state = project_state();
++
++    assert!(is_new_session_row(&state.filtered_rows[0]));
++    assert_eq!(state.filtered_rows[0].display_preview(), "＋ 새 대화 시작");
++    assert_eq!(
++        state
++            .project_browser
++            .new_session_cwd(&state.filtered_rows[0]),
++        Some(PathBuf::from("/work/alpha"))
++    );
++}
++
++#[tokio::test]
++async fn accepting_new_session_action_returns_selected_project_cwd() {
++    let mut state = project_state();
++
++    let selection = state
++        .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
++        .await
++        .expect("handle enter");
++
++    assert!(matches!(selection, Some(SessionSelection::StartFresh)));
++    assert_eq!(state.new_session_cwd, Some(PathBuf::from("/work/alpha")));
++}
++
++#[test]
++fn project_can_be_entered_and_left() {
++    let mut browser = ProjectBrowser::new(SessionPickerAction::Resume);
++    let rows = [row("/tmp/a.jsonl", Some("/work/alpha"), "First", 30)];
++    browser.overview_rows(rows.iter());
++
++    assert!(browser.enter(0));
++    assert_eq!(browser.selected_cwd(), Some(Path::new("/work/alpha")));
++    assert_eq!(browser.selected_label(), Some("alpha"));
++    assert!(browser.back());
++    assert!(browser.is_overview());
++}
++
++#[test]
++fn desktop_project_groups_assigned_sessions_across_working_directories() {
++    let first_thread_id = ThreadId::new();
++    let second_thread_id = ThreadId::new();
++    let (_codex_home, mut browser) = desktop_project_browser(
++        &[first_thread_id, second_thread_id],
++        "Desktop workspace",
++        &["/work/primary", "/work/secondary"],
++    );
++    let rows = [
++        thread_row(first_thread_id, "/generated/one", "First", 30),
++        thread_row(second_thread_id, "/work/secondary", "Second", 20),
++    ];
++
++    let overview = browser.overview_rows(rows.iter());
++
++    assert_eq!(overview.len(), 1);
++    assert_eq!(
++        overview[0].display_preview(),
++        "▸ Desktop workspace  ·  2 sessions"
++    );
++    assert_eq!(overview[0].cwd.as_deref(), Some(Path::new("/work/primary")));
++    assert!(browser.enter(0));
++    assert_eq!(browser.server_cwd_filter(), None);
++    assert_eq!(browser.selected_cwd(), Some(Path::new("/work/primary")));
++    let project_rows = browser.project_rows(rows.to_vec(), false);
++    assert_eq!(project_rows.len(), 2);
++    assert_eq!(project_rows[0].thread_id, Some(first_thread_id));
++    assert_eq!(project_rows[1].thread_id, Some(second_thread_id));
++}
++
++#[test]
++fn unassigned_session_at_unique_project_root_joins_desktop_project() {
++    let (_codex_home, mut browser) =
++        desktop_project_browser(&[], "Desktop workspace", &["/work/primary"]);
++    let rows = [row(
++        "/tmp/unassigned.jsonl",
++        Some("/work/primary"),
++        "Created by CLI",
++        30,
++    )];
++
++    let overview = browser.overview_rows(rows.iter());
++
++    assert_eq!(overview.len(), 1);
++    assert_eq!(
++        overview[0].display_preview(),
++        "▸ Desktop workspace  ·  1 session"
++    );
++    assert!(browser.enter(0));
++    assert_eq!(browser.project_rows(rows.to_vec(), false).len(), 1);
++}
++
++#[test]
++fn folderless_desktop_project_is_visible_without_sessions() {
++    let (_codex_home, mut browser) = desktop_project_browser(&[], "Folderless", &[]);
++
++    let overview = browser.overview_rows(std::iter::empty());
++
++    assert_eq!(overview.len(), 1);
++    assert!(is_project_row(&overview[0]));
++    assert_eq!(overview[0].display_preview(), "▸ Folderless  ·  0 sessions");
++    assert_eq!(overview[0].cwd, None);
++    assert!(browser.enter(0));
++    assert_eq!(browser.selected_cwd(), None);
++    assert!(browser.project_rows(Vec::new(), true).is_empty());
++}
++
++#[test]
++fn fork_picker_keeps_the_flat_session_list() {
++    let browser = ProjectBrowser::new(SessionPickerAction::Fork);
++
++    assert!(!browser.is_enabled());
++    assert!(!browser.is_overview());
++}
++
++#[test]
++fn project_sessions_snapshot() {
++    let mut state = project_state();
++    state.relative_time_reference = Utc.timestamp_opt(40, 0).single();
++    state.update_viewport(/*rows*/ 8, /*width*/ 80);
++
++    let width = 80;
++    let height = 8;
++    let backend = VT100Backend::new(width, height);
++    let mut terminal = Terminal::with_options(backend).expect("terminal");
++    terminal.set_viewport_area(Rect::new(0, 0, width, height));
++
++    {
++        let mut frame = terminal.get_frame();
++        let area = frame.area();
++        render_list(&mut frame, area, &state);
++    }
++    terminal.flush().expect("flush");
++
++    insta::assert_snapshot!(
++        "resume_picker_project_sessions_with_new_action",
++        terminal.backend().to_string()
++    );
++}
++
++#[test]
++fn desktop_project_overview_snapshot() {
++    let first_thread_id = ThreadId::new();
++    let second_thread_id = ThreadId::new();
++    let (_codex_home, browser) = desktop_project_browser(
++        &[first_thread_id, second_thread_id],
++        "Desktop workspace",
++        &["/work/primary", "/work/secondary"],
++    );
++    let loader: PickerLoader = Arc::new(|_| {});
++    let mut state = PickerState::new(
++        FrameRequester::test_dummy(),
++        loader,
++        ProviderFilter::MatchDefault(String::from("openai")),
++        /*show_all*/ true,
++        /*filter_cwd*/ None,
++        SessionPickerAction::Resume,
++    );
++    state.project_browser = browser;
++    state.all_rows = vec![
++        thread_row(first_thread_id, "/generated/one", "First", 30),
++        thread_row(second_thread_id, "/work/secondary", "Second", 20),
++        row("/tmp/fallback.jsonl", Some("/work/fallback"), "Third", 10),
++    ];
++    state.relative_time_reference = Utc.timestamp_opt(40, 0).single();
++    state.apply_filter();
++    state.update_viewport(/*rows*/ 8, /*width*/ 80);
++
++    let width = 80;
++    let height = 8;
++    let backend = VT100Backend::new(width, height);
++    let mut terminal = Terminal::with_options(backend).expect("terminal");
++    terminal.set_viewport_area(Rect::new(0, 0, width, height));
++
++    {
++        let mut frame = terminal.get_frame();
++        let area = frame.area();
++        render_list(&mut frame, area, &state);
++    }
++    terminal.flush().expect("flush");
++
++    insta::assert_snapshot!(
++        "resume_picker_desktop_project_overview",
++        terminal.backend().to_string()
++    );
++}
+diff --git a/codex-rs/tui/src/resume_picker/snapshots/codex_tui__resume_picker__project_browser__tests__resume_picker_desktop_project_overview.snap b/codex-rs/tui/src/resume_picker/snapshots/codex_tui__resume_picker__project_browser__tests__resume_picker_desktop_project_overview.snap
+new file mode 100644
+index 000000000..a96eb23c4
+--- /dev/null
++++ b/codex-rs/tui/src/resume_picker/snapshots/codex_tui__resume_picker__project_browser__tests__resume_picker_desktop_project_overview.snap
+@@ -0,0 +1,9 @@
++---
++source: tui/src/resume_picker/project_browser_tests.rs
++expression: terminal.backend().to_string()
++---
++❯ ▸ Desktop workspace  ·  2 sessions
++  /work/primary
++
++  ▸ fallback  ·  1 session
++  /work/fallback
+diff --git a/codex-rs/tui/src/resume_picker/snapshots/codex_tui__resume_picker__project_browser__tests__resume_picker_project_sessions_with_new_action.snap b/codex-rs/tui/src/resume_picker/snapshots/codex_tui__resume_picker__project_browser__tests__resume_picker_project_sessions_with_new_action.snap
+new file mode 100644
+index 000000000..255baf6a7
+--- /dev/null
++++ b/codex-rs/tui/src/resume_picker/snapshots/codex_tui__resume_picker__project_browser__tests__resume_picker_project_sessions_with_new_action.snap
+@@ -0,0 +1,12 @@
++---
++source: tui/src/resume_picker/project_browser_tests.rs
++expression: terminal.backend().to_string()
++---
++❯ ＋ 새 대화 시작
++  /work/alpha
++
++  First
++  10s ago       ⌁ /work/alpha                     no branch
++
++  Second
++↓ more
