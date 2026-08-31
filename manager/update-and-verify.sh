@@ -2,10 +2,9 @@
 set -uo pipefail
 
 manager="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-launcher="${CODEX_PROJECT_SESSION_BROWSER_LAUNCHER:-$HOME/.local/bin/codex}"
 
 printf 'Codex project session browser update started at %s\n' "$(date --iso-8601=seconds)"
-"$launcher" update
+"$manager/dispatch.sh" update
 update_status=$?
 
 "$manager/doctor.sh"

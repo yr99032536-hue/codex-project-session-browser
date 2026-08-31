@@ -23,6 +23,8 @@ readlink -f ~/.local/bin/codex-upstream
 - `codex-current`: 현재 버전의 패치된 바이너리
 - `codex-upstream`: npm으로 설치된 공식 Codex 실행 파일
 
+`codex`가 존재하지 않거나 `~/.local/manager/dispatch.sh`처럼 존재하지 않는 경로를 가리키면, 이전 관리자 버전의 심볼릭 링크 경로 계산 문제가 발생한 것입니다. 최신 관리자 설치 후 `doctor.sh`를 실행하면 공개 런처와 공식 업스트림 런처까지 함께 검사합니다.
+
 ## 프로젝트가 보이지 않는 경우
 
 로컬 Desktop 프로젝트는 `~/.codex/.codex-global-state.json`에서 읽습니다. `CODEX_HOME`을 별도로 설정했다면 그 디렉터리 아래의 같은 파일을 사용합니다.

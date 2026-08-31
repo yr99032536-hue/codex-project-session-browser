@@ -7,6 +7,8 @@ official_package="${CODEX_PROJECT_SESSION_BROWSER_OFFICIAL_PACKAGE:-$(npm root -
 version="$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).version" "$official_package/package.json")"
 current_version="$(cat "$root/current-version" 2>/dev/null || true)"
 current="$root/bin/codex-current"
+launcher="${CODEX_PROJECT_SESSION_BROWSER_LAUNCHER:-$HOME/.local/bin/codex}"
+upstream="${CODEX_PROJECT_SESSION_BROWSER_UPSTREAM:-$HOME/.local/bin/codex-upstream}"
 expected_patch_sha="$(sha256sum "$manager/project-browser.patch" | awk '{print $1}')"
 status=0
 
@@ -22,7 +24,9 @@ check() {
 }
 
 check version test "$current_version" = "$version"
-check launcher test -x "$current"
+check public-launcher test "$(readlink -f "$launcher" 2>/dev/null || true)" = "$manager/dispatch.sh"
+check upstream-launcher test -x "$upstream"
+check runtime-launcher test -x "$current"
 
 real_target="$(readlink -f "$current" 2>/dev/null || true)"
 package_dir="$(dirname "$(dirname "$real_target")")"

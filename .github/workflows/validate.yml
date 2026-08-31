@@ -16,6 +16,7 @@ jobs:
           ./tests/refresh-patch.sh
           ./tests/doctor.sh
           ./tests/dispatch.sh
+          ./tests/update-and-verify.sh
           ./tests/rebuild-failure.sh
       - name: Verify compatibility manifest
         run: |

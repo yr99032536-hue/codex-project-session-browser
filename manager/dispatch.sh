@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-manager="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+script="$(readlink -f "${BASH_SOURCE[0]}")"
+manager="$(cd "$(dirname "$script")" && pwd)"
 root="$(dirname "$manager")"
 manager="$root/manager"
 upstream="$HOME/.local/bin/codex-upstream"
 launcher="$HOME/.local/bin/codex"
 
 restore_launcher() {
+  mkdir -p "$(dirname "$launcher")"
   ln -sfn "$manager/dispatch.sh" "$launcher"
+  [[ "$(readlink -f "$launcher" 2>/dev/null || true)" == "$manager/dispatch.sh" ]]
 }
 
 official_package() {
@@ -47,7 +50,10 @@ if [[ "${1:-}" == "update" ]]; then
 
   "$upstream" "$@"
   update_status=$?
-  restore_launcher
+  if ! restore_launcher; then
+    printf 'error: failed to restore the managed Codex launcher at %s\n' "$launcher" >&2
+    exit 1
+  fi
   if (( update_status != 0 )); then
     exit "$update_status"
   fi
@@ -58,7 +64,10 @@ if [[ "${1:-}" == "update" ]]; then
   if (( rebuild_status != 0 )); then
     printf 'warning: project session browser could not be rebuilt for Codex %s; using the official binary\n' "$version" >&2
   fi
-  restore_launcher
+  if ! restore_launcher; then
+    printf 'error: failed to restore the managed Codex launcher at %s\n' "$launcher" >&2
+    exit 1
+  fi
   exit "$rebuild_status"
 fi
 
