@@ -1,8 +1,8 @@
 diff --git a/codex-rs/tui/src/lib.rs b/codex-rs/tui/src/lib.rs
-index 2c0a96bf0..b6a7e2f48 100644
+index 0cd2d7ed2..7dbd81b28 100644
 --- a/codex-rs/tui/src/lib.rs
 +++ b/codex-rs/tui/src/lib.rs
-@@ -1259,6 +1259,7 @@ async fn run_ratatui_app(
+@@ -1269,6 +1269,7 @@ async fn run_ratatui_app(
          };
  
      let use_fork = cli.fork_picker || cli.fork_last || cli.fork_session_id.is_some();
@@ -10,7 +10,7 @@ index 2c0a96bf0..b6a7e2f48 100644
      let session_selection = if cli.agents_overview {
          resume_picker::SessionSelection::AgentsOverview
      } else if use_fork {
-@@ -1424,15 +1425,16 @@ async fn run_ratatui_app(
+@@ -1435,15 +1436,16 @@ async fn run_ratatui_app(
          let Some(app_server) = app_server.take() else {
              unreachable!("app server should be initialized for --resume picker");
          };
@@ -30,7 +30,7 @@ index 2c0a96bf0..b6a7e2f48 100644
              resume_picker::SessionSelection::Exit => {
                  terminal_restore_guard.restore_silently();
                  session_log::log_session_end();
-@@ -1465,38 +1467,42 @@ async fn run_ratatui_app(
+@@ -1477,39 +1479,43 @@ async fn run_ratatui_app(
      }
  
      let current_cwd = config.cwd.clone();
@@ -58,6 +58,7 @@ index 2c0a96bf0..b6a7e2f48 100644
 -                token_usage: crate::token_usage::TokenUsage::default(),
 -                thread_id: None,
 -                resume_hint: None,
+-                disconnect_info: None,
 -                update_action: None,
 -                exit_reason: ExitReason::UserRequested,
 -            });
@@ -93,6 +94,7 @@ index 2c0a96bf0..b6a7e2f48 100644
 +                    token_usage: crate::token_usage::TokenUsage::default(),
 +                    thread_id: None,
 +                    resume_hint: None,
++                    disconnect_info: None,
 +                    update_action: None,
 +                    exit_reason: ExitReason::UserRequested,
 +                });
@@ -105,7 +107,7 @@ index 2c0a96bf0..b6a7e2f48 100644
          }
      };
  
-@@ -1507,42 +1513,61 @@ async fn run_ratatui_app(
+@@ -1520,42 +1526,61 @@ async fn run_ratatui_app(
          return Err(err.into());
      }
  
@@ -202,7 +204,7 @@ index 2c0a96bf0..b6a7e2f48 100644
      let mut config = match reloaded_config {
          Ok(config) => config,
 diff --git a/codex-rs/tui/src/resume_picker.rs b/codex-rs/tui/src/resume_picker.rs
-index 1f2f7d3e8..6f8e5ce55 100644
+index 353bfa65e..2ba69a6ac 100644
 --- a/codex-rs/tui/src/resume_picker.rs
 +++ b/codex-rs/tui/src/resume_picker.rs
 @@ -75,7 +75,9 @@ use unicode_width::UnicodeWidthStr;
@@ -338,7 +340,7 @@ index 1f2f7d3e8..6f8e5ce55 100644
                          }
                      }
                      TuiEvent::Paste(pasted) => {
-@@ -591,7 +614,10 @@ async fn run_session_picker_with_loader(
+@@ -592,7 +615,10 @@ async fn run_session_picker_with_loader(
              }
              Some(event) = background_events.next() => {
                  if let Some(selection) = state.handle_background_event(event).await? {
@@ -350,7 +352,7 @@ index 1f2f7d3e8..6f8e5ce55 100644
                  }
              }
              else => break,
-@@ -599,7 +625,10 @@ async fn run_session_picker_with_loader(
+@@ -600,7 +626,10 @@ async fn run_session_picker_with_loader(
      }
  
      // Fallback – treat as cancel/new
@@ -362,7 +364,7 @@ index 1f2f7d3e8..6f8e5ce55 100644
  }
  
  fn raw_reasoning_visibility(config: &Config) -> RawReasoningVisibility {
-@@ -825,6 +854,9 @@ struct PickerState {
+@@ -826,6 +855,9 @@ struct PickerState {
      initial_page_mode: PageLoadMode,
      chord_keymap: Arc<RuntimeChordKeymap>,
      chord_matcher: crate::keymap::KeyChordMatcher,
@@ -372,7 +374,7 @@ index 1f2f7d3e8..6f8e5ce55 100644
  }
  
  #[derive(Clone, Copy, Debug)]
-@@ -1021,6 +1053,9 @@ impl PickerState {
+@@ -1022,6 +1054,9 @@ impl PickerState {
              initial_page_mode: PageLoadMode::StoreDefault,
              chord_keymap: Arc::default(),
              chord_matcher: crate::keymap::KeyChordMatcher::default(),
@@ -382,7 +384,7 @@ index 1f2f7d3e8..6f8e5ce55 100644
          }
      }
  
-@@ -1179,9 +1214,14 @@ impl PickerState {
+@@ -1180,9 +1215,14 @@ impl PickerState {
              }
              _ if self.list_keymap.cancel.is_pressed(key) => {
                  if self.query.is_empty() {
@@ -399,7 +401,7 @@ index 1f2f7d3e8..6f8e5ce55 100644
              }
              KeyEvent {
                  code: KeyCode::Char('t'),
-@@ -1228,6 +1268,13 @@ impl PickerState {
+@@ -1229,6 +1269,13 @@ impl PickerState {
              _ if self.list_keymap.accept.is_pressed(key)
                  && !matches!(self.archive_state, archive::ArchiveState::Idle) => {}
              _ if self.list_keymap.accept.is_pressed(key) => {
@@ -413,7 +415,7 @@ index 1f2f7d3e8..6f8e5ce55 100644
                  if let Some(row) = self.filtered_rows.get(self.selected) {
                      let path = row.path.clone();
                      let thread_id = match row.thread_id {
-@@ -1326,6 +1373,17 @@ impl PickerState {
+@@ -1327,6 +1374,17 @@ impl PickerState {
                  self.focus_previous_toolbar_control();
                  self.request_frame();
              }
@@ -431,7 +433,7 @@ index 1f2f7d3e8..6f8e5ce55 100644
              _ if allow_plain_char_navigation
                  && (self.list_keymap.move_left.is_pressed(key)
                      || self.list_keymap.move_right.is_pressed(key)) =>
-@@ -1364,6 +1422,23 @@ impl PickerState {
+@@ -1365,6 +1423,23 @@ impl PickerState {
          Ok(None)
      }
  
@@ -455,7 +457,7 @@ index 1f2f7d3e8..6f8e5ce55 100644
      fn handle_paste(&mut self, pasted: String) {
          if self.is_transcript_loading() {
              return;
-@@ -1565,12 +1640,27 @@ impl PickerState {
+@@ -1566,12 +1641,27 @@ impl PickerState {
              .all_rows
              .iter()
              .filter(|row| self.row_matches_filter(row));
@@ -487,7 +489,7 @@ index 1f2f7d3e8..6f8e5ce55 100644
          if self.selected >= self.filtered_rows.len() {
              self.selected = self.filtered_rows.len().saturating_sub(1);
          }
-@@ -1582,6 +1672,9 @@ impl PickerState {
+@@ -1583,6 +1673,9 @@ impl PickerState {
      }
  
      fn row_matches_filter(&self, row: &Row) -> bool {
@@ -497,7 +499,7 @@ index 1f2f7d3e8..6f8e5ce55 100644
          if self.filter_mode == SessionFilterMode::All {
              return true;
          }
-@@ -1782,6 +1875,9 @@ impl PickerState {
+@@ -1783,6 +1876,9 @@ impl PickerState {
      }
  
      fn toggle_filter_mode(&mut self) {
@@ -507,7 +509,7 @@ index 1f2f7d3e8..6f8e5ce55 100644
          let next_filter_mode = self.filter_mode.toggle(self.filter_cwd.as_deref());
          if self.filter_mode == next_filter_mode {
              return;
-@@ -1799,6 +1895,12 @@ impl PickerState {
+@@ -1800,6 +1896,12 @@ impl PickerState {
      }
  
      fn active_cwd_filter(&self) -> Option<PathBuf> {
@@ -520,7 +522,7 @@ index 1f2f7d3e8..6f8e5ce55 100644
          match self.filter_mode {
              SessionFilterMode::Cwd => self.filter_cwd.clone(),
              SessionFilterMode::All => None,
-@@ -2039,10 +2141,14 @@ fn draw_picker(tui: &mut Tui, state: &PickerState, screen_size: Size) -> std::io
+@@ -2040,10 +2142,14 @@ fn draw_picker(tui: &mut Tui, state: &PickerState, screen_size: Size) -> std::io
          };
  
          // Header
@@ -537,7 +539,7 @@ index 1f2f7d3e8..6f8e5ce55 100644
          };
          let header_line: Line = vec![header_title].into();
          frame.render_widget_ref(&header_line, chrome(header));
-@@ -2176,6 +2282,17 @@ fn sort_control_spans(state: &PickerState, compact: bool) -> Vec<Span<'static>>
+@@ -2177,6 +2283,17 @@ fn sort_control_spans(state: &PickerState, compact: bool) -> Vec<Span<'static>>
  
  fn filter_control_spans(state: &PickerState, compact: bool) -> Vec<Span<'static>> {
      let filter_focused = state.toolbar_focus == ToolbarControl::Filter;
@@ -555,7 +557,7 @@ index 1f2f7d3e8..6f8e5ce55 100644
      if compact || state.filter_cwd.is_none() {
          return vec![
              "Filter:".dim(),
-@@ -2365,19 +2482,34 @@ fn footer_hint_lines(state: &PickerState, width: u16) -> Vec<Line<'static>> {
+@@ -2366,19 +2483,34 @@ fn footer_hint_lines(state: &PickerState, width: u16) -> Vec<Line<'static>> {
          return vec![line, Line::default()];
      }
  
@@ -599,7 +601,7 @@ index 1f2f7d3e8..6f8e5ce55 100644
      let ctrl_c_label = match state.launch_context {
          SessionPickerLaunchContext::Startup => "quit",
          SessionPickerLaunchContext::ExistingSession { .. } => "exit",
-@@ -2747,6 +2879,9 @@ fn render_session_lines(
+@@ -2748,6 +2880,9 @@ fn render_session_lines(
      is_zebra: bool,
      width: u16,
  ) -> Vec<Line<'static>> {
@@ -609,7 +611,7 @@ index 1f2f7d3e8..6f8e5ce55 100644
      match state.density {
          SessionListDensity::Comfortable => {
              render_comfortable_session_lines(row, state, is_selected, is_expanded, is_zebra, width)
-@@ -2757,6 +2892,47 @@ fn render_session_lines(
+@@ -2758,6 +2893,47 @@ fn render_session_lines(
      }
  }
  

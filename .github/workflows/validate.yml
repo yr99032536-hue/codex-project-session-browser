@@ -11,7 +11,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check shell syntax
         run: bash -n install.sh uninstall.sh manager/dispatch.sh manager/rebuild.sh
-      - name: Check patch against Codex 0.150.1
+      - name: Check patch against Codex 0.151.0
         run: |
-          git clone --depth=1 --branch rust-v0.150.1 https://github.com/openai/codex.git upstream
+          git clone --depth=1 --branch rust-v0.151.0 https://github.com/openai/codex.git upstream
           git -C upstream apply --check ../patches/project-browser.patch
