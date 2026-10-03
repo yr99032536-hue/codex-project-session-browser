@@ -1,0 +1,13 @@
+[Unit]
+Description=Automatically number Codex project conversations
+
+[Service]
+Type=simple
+Environment="PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/usr/bin/python3 %h/.local/share/codex-project-session-browser/manager/session_numbering.py
+Restart=on-failure
+RestartSec=10
+UMask=0077
+
+[Install]
+WantedBy=default.target

@@ -15,9 +15,11 @@ ln -sfn "$upstream" "$launcher"
 
 if command -v systemctl >/dev/null 2>&1; then
   systemctl --user disable --now codex-project-session-browser-update.timer >/dev/null 2>&1 || true
+  systemctl --user disable --now codex-project-session-browser-numbering.service >/dev/null 2>&1 || true
   rm -f \
     "$unit_dir/codex-project-session-browser-update.service" \
-    "$unit_dir/codex-project-session-browser-update.timer"
+    "$unit_dir/codex-project-session-browser-update.timer" \
+    "$unit_dir/codex-project-session-browser-numbering.service"
   systemctl --user daemon-reload
 fi
 

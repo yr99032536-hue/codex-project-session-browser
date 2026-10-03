@@ -1,5 +1,5 @@
 diff --git a/codex-rs/tui/src/lib.rs b/codex-rs/tui/src/lib.rs
-index 0cd2d7ed2..7dbd81b28 100644
+index 0cd2d7e..7dbd81b 100644
 --- a/codex-rs/tui/src/lib.rs
 +++ b/codex-rs/tui/src/lib.rs
 @@ -1269,6 +1269,7 @@ async fn run_ratatui_app(
@@ -204,7 +204,7 @@ index 0cd2d7ed2..7dbd81b28 100644
      let mut config = match reloaded_config {
          Ok(config) => config,
 diff --git a/codex-rs/tui/src/resume_picker.rs b/codex-rs/tui/src/resume_picker.rs
-index 353bfa65e..2ba69a6ac 100644
+index 353bfa6..2ba69a6 100644
 --- a/codex-rs/tui/src/resume_picker.rs
 +++ b/codex-rs/tui/src/resume_picker.rs
 @@ -75,7 +75,9 @@ use unicode_width::UnicodeWidthStr;
@@ -660,7 +660,7 @@ index 353bfa65e..2ba69a6ac 100644
      row: &Row,
      state: &PickerState,
 diff --git a/codex-rs/tui/src/resume_picker/archive.rs b/codex-rs/tui/src/resume_picker/archive.rs
-index 41f065929..e59cfeb5b 100644
+index 41f0659..e59cfeb 100644
 --- a/codex-rs/tui/src/resume_picker/archive.rs
 +++ b/codex-rs/tui/src/resume_picker/archive.rs
 @@ -36,7 +36,10 @@ impl PickerState {
@@ -677,7 +677,7 @@ index 41f065929..e59cfeb5b 100644
                      && binding.chord.prefix.is_press(archive_key)
 diff --git a/codex-rs/tui/src/resume_picker/desktop_projects.rs b/codex-rs/tui/src/resume_picker/desktop_projects.rs
 new file mode 100644
-index 000000000..1c6817e21
+index 0000000..1c6817e
 --- /dev/null
 +++ b/codex-rs/tui/src/resume_picker/desktop_projects.rs
 @@ -0,0 +1,185 @@
@@ -868,7 +868,7 @@ index 000000000..1c6817e21
 +mod tests;
 diff --git a/codex-rs/tui/src/resume_picker/desktop_projects_tests.rs b/codex-rs/tui/src/resume_picker/desktop_projects_tests.rs
 new file mode 100644
-index 000000000..ea79b26e5
+index 0000000..ea79b26
 --- /dev/null
 +++ b/codex-rs/tui/src/resume_picker/desktop_projects_tests.rs
 @@ -0,0 +1,130 @@
@@ -1004,10 +1004,10 @@ index 000000000..ea79b26e5
 +}
 diff --git a/codex-rs/tui/src/resume_picker/project_browser.rs b/codex-rs/tui/src/resume_picker/project_browser.rs
 new file mode 100644
-index 000000000..7206566c6
+index 0000000..0a6c843
 --- /dev/null
 +++ b/codex-rs/tui/src/resume_picker/project_browser.rs
-@@ -0,0 +1,308 @@
+@@ -0,0 +1,326 @@
 +use std::collections::HashMap;
 +use std::path::Path;
 +use std::path::PathBuf;
@@ -1199,6 +1199,7 @@ index 000000000..7206566c6
 +            .into_iter()
 +            .filter(|row| self.project_key(row).as_ref() == Some(&project.key))
 +            .collect::<Vec<_>>();
++        project_rows.sort_by_key(|row| session_number(row.display_preview()));
 +        if include_new_session && let Some(cwd) = project.cwd.as_ref() {
 +            project_rows.insert(
 +                0,
@@ -1313,15 +1314,32 @@ index 000000000..7206566c6
 +    }
 +}
 +
++fn session_number(title: &str) -> u64 {
++    let Some((prefix, suffix)) = title.trim_start().split_once('.') else {
++        return u64::MAX;
++    };
++    if prefix.is_empty()
++        || !prefix.bytes().all(|byte| byte.is_ascii_digit())
++        || !suffix.starts_with(char::is_whitespace)
++    {
++        return u64::MAX;
++    }
++    prefix
++        .parse::<u64>()
++        .ok()
++        .filter(|number| *number > 0)
++        .unwrap_or(u64::MAX)
++}
++
 +#[cfg(test)]
 +#[path = "project_browser_tests.rs"]
 +mod tests;
 diff --git a/codex-rs/tui/src/resume_picker/project_browser_tests.rs b/codex-rs/tui/src/resume_picker/project_browser_tests.rs
 new file mode 100644
-index 000000000..eb7046ad2
+index 0000000..e1b4d60
 --- /dev/null
 +++ b/codex-rs/tui/src/resume_picker/project_browser_tests.rs
-@@ -0,0 +1,322 @@
+@@ -0,0 +1,388 @@
 +use std::fs;
 +use std::path::Path;
 +use std::path::PathBuf;
@@ -1468,6 +1486,72 @@ index 000000000..eb7046ad2
 +            .project_browser
 +            .new_session_cwd(&state.filtered_rows[0]),
 +        Some(PathBuf::from("/work/alpha"))
++    );
++}
++
++#[test]
++fn project_sessions_sort_by_number_before_recency() {
++    let mut state = project_state();
++    state.all_rows = vec![
++        row("/tmp/ten.jsonl", Some("/work/alpha"), "10. Tenth", 100),
++        row("/tmp/two.jsonl", Some("/work/alpha"), "2. Second", 20),
++        row("/tmp/nine.jsonl", Some("/work/alpha"), "9. Ninth", 200),
++        row(
++            "/tmp/unnumbered.jsonl",
++            Some("/work/alpha"),
++            "Unnumbered",
++            300,
++        ),
++        row("/tmp/one.jsonl", Some("/work/alpha"), "1. First", 10),
++    ];
++    state.apply_filter();
++    assert_eq!(
++        state
++            .filtered_rows
++            .iter()
++            .map(Row::display_preview)
++            .collect::<Vec<_>>(),
++        vec![
++            "＋ 새 대화 시작",
++            "1. First",
++            "2. Second",
++            "9. Ninth",
++            "10. Tenth",
++            "Unnumbered"
++        ]
++    );
++    state.relative_time_reference = Utc.timestamp_opt(400, 0).single();
++    let width = 90;
++    let height = 16;
++    state.update_viewport(height.into(), width);
++    let mut terminal = Terminal::with_options(VT100Backend::new(width, height)).expect("terminal");
++    terminal.set_viewport_area(Rect::new(0, 0, width, height));
++    {
++        let mut frame = terminal.get_frame();
++        let area = frame.area();
++        render_list(&mut frame, area, &state);
++    }
++    terminal.flush().expect("flush");
++    insta::assert_snapshot!(
++        "resume_picker_numbered_project_sessions",
++        terminal.backend().to_string()
++    );
++}
++
++#[test]
++fn session_number_requires_a_positive_integer_prefix() {
++    assert_eq!(
++        [
++            "2. Title",
++            " 10. Title",
++            "0. Title",
++            "2.5 version",
++            "2.Title",
++            "18446744073709551616. Large",
++            "No number"
++        ]
++        .map(super::session_number),
++        [2, 10, u64::MAX, u64::MAX, u64::MAX, u64::MAX, u64::MAX]
 +    );
 +}
 +
@@ -1646,7 +1730,7 @@ index 000000000..eb7046ad2
 +}
 diff --git a/codex-rs/tui/src/resume_picker/snapshots/codex_tui__resume_picker__project_browser__tests__resume_picker_desktop_project_overview.snap b/codex-rs/tui/src/resume_picker/snapshots/codex_tui__resume_picker__project_browser__tests__resume_picker_desktop_project_overview.snap
 new file mode 100644
-index 000000000..a96eb23c4
+index 0000000..a96eb23
 --- /dev/null
 +++ b/codex-rs/tui/src/resume_picker/snapshots/codex_tui__resume_picker__project_browser__tests__resume_picker_desktop_project_overview.snap
 @@ -0,0 +1,9 @@
@@ -1659,9 +1743,35 @@ index 000000000..a96eb23c4
 +
 +  ▸ fallback  ·  1 session
 +  /work/fallback
+diff --git a/codex-rs/tui/src/resume_picker/snapshots/codex_tui__resume_picker__project_browser__tests__resume_picker_numbered_project_sessions.snap b/codex-rs/tui/src/resume_picker/snapshots/codex_tui__resume_picker__project_browser__tests__resume_picker_numbered_project_sessions.snap
+new file mode 100644
+index 0000000..6a84d7c
+--- /dev/null
++++ b/codex-rs/tui/src/resume_picker/snapshots/codex_tui__resume_picker__project_browser__tests__resume_picker_numbered_project_sessions.snap
+@@ -0,0 +1,20 @@
++---
++source: tui/src/resume_picker/project_browser_tests.rs
++expression: terminal.backend().to_string()
++---
++❯ ＋ 새 대화 시작
++  /work/alpha
++
++  1. First
++  6m ago        ⌁ /work/alpha                          no branch
++
++  2. Second
++  6m ago        ⌁ /work/alpha                          no branch
++
++  9. Ninth
++  3m ago        ⌁ /work/alpha                          no branch
++
++  10. Tenth
++  5m ago        ⌁ /work/alpha                          no branch
++
++↓ more
 diff --git a/codex-rs/tui/src/resume_picker/snapshots/codex_tui__resume_picker__project_browser__tests__resume_picker_project_sessions_with_new_action.snap b/codex-rs/tui/src/resume_picker/snapshots/codex_tui__resume_picker__project_browser__tests__resume_picker_project_sessions_with_new_action.snap
 new file mode 100644
-index 000000000..255baf6a7
+index 0000000..255baf6
 --- /dev/null
 +++ b/codex-rs/tui/src/resume_picker/snapshots/codex_tui__resume_picker__project_browser__tests__resume_picker_project_sessions_with_new_action.snap
 @@ -0,0 +1,12 @@

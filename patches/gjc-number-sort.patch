@@ -1,0 +1,139 @@
+diff --git a/codex-rs/tui/src/resume_picker/project_browser.rs b/codex-rs/tui/src/resume_picker/project_browser.rs
+index 9e08cea21..e983dd0f3 100644
+--- a/codex-rs/tui/src/resume_picker/project_browser.rs
++++ b/codex-rs/tui/src/resume_picker/project_browser.rs
+@@ -198,6 +198,7 @@ impl ProjectBrowser {
+             .into_iter()
+             .filter(|row| self.project_key(row).as_ref() == Some(&project.key))
+             .collect::<Vec<_>>();
++        project_rows.sort_by_key(|row| session_number(row.display_preview()));
+         if include_new_session && let Some(cwd) = project.cwd.as_ref() {
+             project_rows.insert(
+                 0,
+@@ -312,6 +313,23 @@ fn latest(left: Option<DateTime<Utc>>, right: Option<DateTime<Utc>>) -> Option<D
+     }
+ }
+ 
++fn session_number(title: &str) -> u64 {
++    let Some((prefix, suffix)) = title.trim_start().split_once('.') else {
++        return u64::MAX;
++    };
++    if prefix.is_empty()
++        || !prefix.bytes().all(|byte| byte.is_ascii_digit())
++        || !suffix.starts_with(char::is_whitespace)
++    {
++        return u64::MAX;
++    }
++    prefix
++        .parse::<u64>()
++        .ok()
++        .filter(|number| *number > 0)
++        .unwrap_or(u64::MAX)
++}
++
+ #[cfg(test)]
+ #[path = "project_browser_tests.rs"]
+ mod tests;
+diff --git a/codex-rs/tui/src/resume_picker/project_browser_tests.rs b/codex-rs/tui/src/resume_picker/project_browser_tests.rs
+index eb7046ad2..e1b4d603f 100644
+--- a/codex-rs/tui/src/resume_picker/project_browser_tests.rs
++++ b/codex-rs/tui/src/resume_picker/project_browser_tests.rs
+@@ -147,6 +147,72 @@ fn project_rows_start_with_new_session_action() {
+     );
+ }
+ 
++#[test]
++fn project_sessions_sort_by_number_before_recency() {
++    let mut state = project_state();
++    state.all_rows = vec![
++        row("/tmp/ten.jsonl", Some("/work/alpha"), "10. Tenth", 100),
++        row("/tmp/two.jsonl", Some("/work/alpha"), "2. Second", 20),
++        row("/tmp/nine.jsonl", Some("/work/alpha"), "9. Ninth", 200),
++        row(
++            "/tmp/unnumbered.jsonl",
++            Some("/work/alpha"),
++            "Unnumbered",
++            300,
++        ),
++        row("/tmp/one.jsonl", Some("/work/alpha"), "1. First", 10),
++    ];
++    state.apply_filter();
++    assert_eq!(
++        state
++            .filtered_rows
++            .iter()
++            .map(Row::display_preview)
++            .collect::<Vec<_>>(),
++        vec![
++            "＋ 새 대화 시작",
++            "1. First",
++            "2. Second",
++            "9. Ninth",
++            "10. Tenth",
++            "Unnumbered"
++        ]
++    );
++    state.relative_time_reference = Utc.timestamp_opt(400, 0).single();
++    let width = 90;
++    let height = 16;
++    state.update_viewport(height.into(), width);
++    let mut terminal = Terminal::with_options(VT100Backend::new(width, height)).expect("terminal");
++    terminal.set_viewport_area(Rect::new(0, 0, width, height));
++    {
++        let mut frame = terminal.get_frame();
++        let area = frame.area();
++        render_list(&mut frame, area, &state);
++    }
++    terminal.flush().expect("flush");
++    insta::assert_snapshot!(
++        "resume_picker_numbered_project_sessions",
++        terminal.backend().to_string()
++    );
++}
++
++#[test]
++fn session_number_requires_a_positive_integer_prefix() {
++    assert_eq!(
++        [
++            "2. Title",
++            " 10. Title",
++            "0. Title",
++            "2.5 version",
++            "2.Title",
++            "18446744073709551616. Large",
++            "No number"
++        ]
++        .map(super::session_number),
++        [2, 10, u64::MAX, u64::MAX, u64::MAX, u64::MAX, u64::MAX]
++    );
++}
++
+ #[tokio::test]
+ async fn accepting_new_session_action_returns_selected_project_cwd() {
+     let mut state = project_state();
+diff --git a/codex-rs/tui/src/resume_picker/snapshots/codex_tui__resume_picker__project_browser__tests__resume_picker_numbered_project_sessions.snap b/codex-rs/tui/src/resume_picker/snapshots/codex_tui__resume_picker__project_browser__tests__resume_picker_numbered_project_sessions.snap
+new file mode 100644
+index 000000000..6a84d7cf8
+--- /dev/null
++++ b/codex-rs/tui/src/resume_picker/snapshots/codex_tui__resume_picker__project_browser__tests__resume_picker_numbered_project_sessions.snap
+@@ -0,0 +1,20 @@
++---
++source: tui/src/resume_picker/project_browser_tests.rs
++expression: terminal.backend().to_string()
++---
++❯ ＋ 새 대화 시작
++  /work/alpha
++
++  1. First
++  6m ago        ⌁ /work/alpha                          no branch
++
++  2. Second
++  6m ago        ⌁ /work/alpha                          no branch
++
++  9. Ninth
++  3m ago        ⌁ /work/alpha                          no branch
++
++  10. Tenth
++  5m ago        ⌁ /work/alpha                          no branch
++
++↓ more

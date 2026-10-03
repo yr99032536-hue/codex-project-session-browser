@@ -1,4 +1,6 @@
 # Codex version<TAB>SHA-256<TAB>repository-relative patch path
-0.150.1	34fde7c4dc651e04babff825b60cc0d9065a783ae9de9914b4015bf1df9e6895	patches/0.150.1/project-browser.patch
-0.151.0	41644cf78f7d0ca19ec5ab8489d6fda7597324fbf71b43b05673448df3f4ac0b	patches/0.151.0/project-browser.patch
-0.153.2	41644cf78f7d0ca19ec5ab8489d6fda7597324fbf71b43b05673448df3f4ac0b	patches/0.153.2/project-browser.patch
+0.150.1	9588a4b36d98350da509a3c1e286b7c066577061b40140a976699e2533f4f407	patches/0.150.1/project-browser.patch
+0.151.0	e01158d2f450a18a6f16d162444792dda87164b90c96628d2aee3980ac84bdf3	patches/0.151.0/project-browser.patch
+0.153.2	2660a13f0fce1ff6b08e3ef86956eb4614ff019d1fa739c0b3fabfed44781c20	patches/0.153.2/project-browser.patch
+0.153.4	2660a13f0fce1ff6b08e3ef86956eb4614ff019d1fa739c0b3fabfed44781c20	patches/0.153.4/project-browser.patch
+0.154.0	43827128b2dded0017bfe32f69a135b517397bdd13568d57bf6aca098bb21b5c	patches/0.154.0/project-browser.patch

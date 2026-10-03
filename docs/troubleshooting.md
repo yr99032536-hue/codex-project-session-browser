@@ -91,6 +91,19 @@ journalctl --user -u codex-project-session-browser-update.service -n 100 --no-pa
 
 타이머는 Codex Desktop 앱과 별도로 동작하며, 놓친 실행은 다음 사용자 로그인 때 보충합니다.
 
+## 자동 번호 확인
+
+```bash
+systemctl --user status codex-project-session-browser-numbering.service
+journalctl --user -u codex-project-session-browser-numbering.service -n 50 --no-pager
+```
+
+이미 번호를 사용하는 프로젝트는 자동 등록됩니다. 첫 설치 시 기존 번호를 보존하고, 번호가 없던 과거 대화는 변경하지 않습니다. 아직 번호가 없는 새 프로젝트는 `--group project:<ID>` 또는 `--group cwd:/절대/경로`로 서비스에 추가할 수 있습니다. 대화가 아직 저장되지 않았거나 이름 변경 API가 일시적으로 실패하면 저장 이후 다음 주기에 다시 처리합니다.
+
+번호 기록 파일 `session-numbers.sqlite`에는 번호의 최고값도 저장되므로 대화 삭제 후에도 번호를 재사용하지 않습니다. 이 파일을 삭제하면 삭제된 대화의 번호 기록은 복구할 수 없습니다.
+
+현재 대화 목록이 이미 열려 있으면 닫고 `codex resume`를 다시 열어 갱신된 이름과 숫자 정렬을 확인합니다.
+
 ## 런타임 구성 요소 확인
 
 ```bash
