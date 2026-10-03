@@ -1,0 +1,87 @@
+diff --git a/docs/codex-shared-session.md b/docs/codex-shared-session.md
+index 8d33d9f..5f62569 100644
+--- a/docs/codex-shared-session.md
++++ b/docs/codex-shared-session.md
+@@ -4,6 +4,8 @@ Linked workspaces run the ordinary `gjc` interactive interface with GJC's own mo
+ 
+ This opt-in command currently supports Linux and the audited Codex 0.153.4 binary with SHA-256 `ac4b47187ebafc6131475c0bb895311828f552c003194193f4e22007ad6f5658`. Other binaries fail admission, including a different build with the same version number. Unlinked workspaces retain normal execution. Native integration adds a local connection registry and a small admission block to the existing Codex launcher; A separate metadata-only selector uses the installed native Codex project browser. The audited storage/model executable and model configuration remain unchanged.
+ 
++The default audited runtime is an independent full package at `~/.local/share/gjc-shared-session/runtimes/codex-0.153.4-ac4b47187ebafc6131475c0bb895311828f552c003194193f4e22007ad6f5658/`. Do not point shared connections at the mutable `codex-project-picker/packages/0.153.4/` installation: even a same-version UI rebuild replaces its binary and correctly fails the exact-hash guard. Preserve the original audited binary and its matching host/resources in this separate directory; changing a connection's binary path to that identical copy does not change its thread, home, journal binding, or history. A new audited runtime requires a separate review rather than automatically trusting an updated hash.
++
+ ## Usage
+ 
+ With the local catalogue launcher installed, both commands open the same native project → conversation picker:
+diff --git a/packages/coding-agent/src/codex-share/catalogue.ts b/packages/coding-agent/src/codex-share/catalogue.ts
+index 4f2f29f..7309ecd 100644
+--- a/packages/coding-agent/src/codex-share/catalogue.ts
++++ b/packages/coding-agent/src/codex-share/catalogue.ts
+@@ -6,7 +6,7 @@ import { loadConnections, type SharedConnection } from "./connections";
+ import { durableWrite } from "./journal";
+ import { linkConnection } from "./link";
+ import { migrateGjc } from "./migrate";
+-import { CodexOwner } from "./owner";
++import { CODEX_BINARY_SHA256, CodexOwner } from "./owner";
+ import { array, digest, object, string } from "./records";
+ 
+ export interface CatalogueOptions {
+@@ -50,7 +50,12 @@ export function defaultCatalogueOptions(cwd: string): CatalogueOptions {
+ 	return {
+ 		cwd: path.resolve(cwd),
+ 		codexHome: path.resolve(process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex")),
+-		binary: path.join(os.homedir(), ".local/share/codex-project-picker/packages/0.153.4/bin/codex"),
++		binary: path.join(
++			os.homedir(),
++			".local/share/gjc-shared-session/runtimes",
++			`codex-0.153.4-${CODEX_BINARY_SHA256}`,
++			"bin/codex",
++		),
+ 		picker: path.join(os.homedir(), ".local/share/gjc-shared-session/bin/gjc-session-picker"),
+ 	};
+ }
+diff --git a/packages/coding-agent/test/codex-share-catalogue.test.ts b/packages/coding-agent/test/codex-share-catalogue.test.ts
+index c49a36f..24226f7 100644
+--- a/packages/coding-agent/test/codex-share-catalogue.test.ts
++++ b/packages/coding-agent/test/codex-share-catalogue.test.ts
+@@ -3,8 +3,9 @@ import * as fs from "node:fs/promises";
+ import * as os from "node:os";
+ import * as path from "node:path";
+ import { exportCatalogueArchive } from "../src/codex-share/archive-compat";
+-import { type CodexSessionInfo, mergeCatalogue } from "../src/codex-share/catalogue";
++import { type CodexSessionInfo, defaultCatalogueOptions, mergeCatalogue } from "../src/codex-share/catalogue";
+ import { loadConnections, type SharedConnection, selectRootConnection } from "../src/codex-share/connections";
++import { CODEX_BINARY_SHA256, CodexOwner } from "../src/codex-share/owner";
+ import { codexPickerIndex, selectCodexRoute, stripCodexCwd } from "../src/codex-share/route-cli";
+ import type { SessionInfo } from "../src/session/session-manager";
+ 
+@@ -41,6 +42,31 @@ const thread = (id: string): CodexSessionInfo => ({
+ 	updatedAt: 3,
+ 	archived: false,
+ });
++it("keeps the audited storage runtime outside mutable project-browser packages", () => {
++	const options = defaultCatalogueOptions("/workspace");
++	expect(options.binary).toBe(
++		path.join(
++			os.homedir(),
++			".local/share/gjc-shared-session/runtimes",
++			`codex-0.153.4-${CODEX_BINARY_SHA256}`,
++			"bin/codex",
++		),
++	);
++	expect(options.binary).not.toContain("codex-project-picker/packages");
++	expect(options.picker).toBe(path.join(os.homedir(), ".local/share/gjc-shared-session/bin/gjc-session-picker"));
++});
++it("still refuses an unaudited binary before starting a shared storage process", async () => {
++	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "catalogue-runtime-"));
++	try {
++		const binary = path.join(directory, "codex");
++		await Bun.write(binary, "different 0.153.4 build");
++		await expect(CodexOwner.connect(binary, directory, directory)).rejects.toThrow(
++			"differs from the audited 0.153.4 runtime",
++		);
++	} finally {
++		await fs.rm(directory, { recursive: true, force: true });
++	}
++});
+ it("lists both origins, collapses source/proxy/thread aliases, and keeps multiple conversations in one project", () => {
+ 	const entries = mergeCatalogue(
+ 		[session(uuid(2), "proxy"), session(uuid(3), "source"), session(uuid(4), "두 번째 GJC")],

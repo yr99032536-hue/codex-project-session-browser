@@ -114,7 +114,7 @@ Python 3 표준 라이브러리와 systemd 사용자 서비스를 사용합니�
 
 별도 `CODEX_HOME`을 쓰면 서비스의 `Environment=CODEX_HOME=...`을 지정합니다. 아직 번호를 시작하지 않은 프로젝트에는 서비스 실행 인수로 `--group project:<프로젝트 ID>` 또는 `--group cwd:/절대/경로`를 지정할 수 있습니다. 예전 설치 경로를 유지하고 있다면 `CODEX_PROJECT_SESSION_BROWSER_ROOT=/설치/경로 ./install-session-numbering.sh`로 설치합니다.
 
-현재 GJC 통합 선택기를 사용 중이라면 같은 Rust 프로젝트 목록에 번호순 정렬을 적용하는 `patches/gjc-number-sort.patch`도 제공합니다. 이 어댑터는 별도 GJC 통합 소스가 있는 설치를 대상으로 하며, 원래 Codex 설치에는 버전별 기본 패치만 사용하면 됩니다.
+현재 GJC 통합 선택기를 사용 중이라면 같은 Rust 프로젝트 목록에 번호순 정렬을 적용하는 `patches/gjc-number-sort.patch`도 제공합니다. 공유 대화의 정확한 바이너리 해시 검증을 사용하는 설치에서는 `patches/gjc-runtime-isolation.patch`로 검증된 저장소 실행 파일을 업데이트 대상 CLI와 분리합니다. 기존 연결의 실행 경로도 동일한 검증 파일의 독립 복사본으로 바꿔야 하며, 해시 검사를 끄거나 새 해시를 무조건 허용하지 않습니다. 이 어댑터들은 별도 GJC 통합 소스가 있는 설치를 대상으로 하며, 원래 Codex 설치에는 버전별 기본 패치만 사용하면 됩니다.
 
 ## 프로젝트를 묶는 기준
 
