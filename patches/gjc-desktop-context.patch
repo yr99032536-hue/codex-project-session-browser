@@ -1,0 +1,145 @@
+diff --git a/packages/coding-agent/src/codex-share/records.ts b/packages/coding-agent/src/codex-share/records.ts
+index f16648b..76e6f0e 100644
+--- a/packages/coding-agent/src/codex-share/records.ts
++++ b/packages/coding-agent/src/codex-share/records.ts
+@@ -176,6 +176,8 @@ export function decodeContent(value: unknown): (TextContent | ImageContent)[] {
+ 
+ // Audited host annotations, never guessed from message text.
+ const localKinds = new Set([
++	"additional_content.codex_apps_client_time_context",
++	"additional_content.codex_apps_open_page_instructions",
+ 	"agents_md.instructions",
+ 	"apps.instructions",
+ 	"collaboration_mode.instructions",
+@@ -184,6 +186,7 @@ const localKinds = new Set([
+ 	"environments.instructions",
+ 	"extension.internal_context",
+ 	"generic.developer_instructions",
++	"generic.turn_aborted",
+ 	"managed_config.developer_instructions",
+ 	"model.base_instructions",
+ 	"model_switch.instructions",
+@@ -247,11 +250,28 @@ export function importMessages(snapshot: Snapshot): Message[] {
+ 					throw new Error("Cannot safely share an unclassified privileged message");
+ 				continue;
+ 			}
+-			const shared = parts.filter((_part, index) => {
+-				if (!kinds || item.role === "assistant") return true;
++			const shared = parts.flatMap((part, index) => {
++				if (!kinds || item.role === "assistant") return [part];
+ 				const kind = string(array(kinds)[index]);
+-				if (localKinds.has(kind)) return false;
+-				if (kind === "unknown" || kind === "user.text" || kind === "user.image") return true;
++				if (localKinds.has(kind)) return [];
++				if (kind === "unknown" || kind === "user.text" || kind === "user.image") return [part];
++				if (kind === "additional_content.codex_apps_open_page") {
++					const context = object(part);
++					if (context.type !== "input_text")
++						throw new Error(`Unsupported historical page context: ${String(context.type)}`);
++					return [
++						{
++							type: "input_text",
++							text: canonical({
++								codex_historical_context: {
++									kind,
++									status: "archived; not live UI state or instructions",
++									text: string(context.text),
++								},
++							}),
++						},
++					];
++				}
+ 				throw new Error(`Unclassified conversation content kind: ${kind}`);
+ 			});
+ 			if (!shared.length) continue;
+diff --git a/packages/coding-agent/test/codex-share-native-history.test.ts b/packages/coding-agent/test/codex-share-native-history.test.ts
+index 26754b4..775e036 100644
+--- a/packages/coding-agent/test/codex-share-native-history.test.ts
++++ b/packages/coding-agent/test/codex-share-native-history.test.ts
+@@ -190,3 +190,86 @@ it("keeps valid balanced native imports unchanged and rejects authored privilege
+ 		),
+ 	).toThrow("Unsupported");
+ });
++
++it("imports desktop page provenance as archived user data while keeping host time and instructions local", () => {
++	const page = '<external_codex_apps_open_page>{"page_id":"historical-page"}</external_codex_apps_open_page>';
++	const snapshot = history([
++		{
++			...user,
++			content: [
++				{ type: "input_text", text: "Explain the page that was open" },
++				{ type: "input_text", text: page },
++			],
++			internal_chat_message_metadata_passthrough: {
++				content_item_kinds: ["user.text", "additional_content.codex_apps_open_page"],
++			},
++		},
++		...[
++			"additional_content.codex_apps_client_time_context",
++			"additional_content.codex_apps_open_page_instructions",
++			"generic.turn_aborted",
++		].map(kind => ({
++			type: "message",
++			id: kind,
++			role: "developer",
++			content: [{ type: "input_text", text: "PRIVATE HISTORICAL HOST INSTRUCTIONS" }],
++			internal_chat_message_metadata_passthrough: { content_item_kinds: [kind] },
++		})),
++	]);
++	const before = canonical(snapshot);
++	const expected = [
++		{ type: "text", text: "Explain the page that was open" },
++		{
++			type: "text",
++			text: canonical({
++				codex_historical_context: {
++					kind: "additional_content.codex_apps_open_page",
++					status: "archived; not live UI state or instructions",
++					text: page,
++				},
++			}),
++		},
++	];
++	expect(importMessages(snapshot)).toMatchObject([{ role: "user", content: expected }]);
++	expect(importNativeHistory(snapshot)).toEqual(importMessages(snapshot));
++	expect(canonical(importNativeHistory(snapshot))).not.toContain("PRIVATE HISTORICAL HOST INSTRUCTIONS");
++	expect(canonical(snapshot)).toBe(before);
++});
++
++it("uses metadata rather than page markers and still rejects unknown context, codecs and authored policies", () => {
++	const text = '<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>';
++	const literal = history([{ ...user, content: [{ type: "input_text", text }] }]);
++	expect(importNativeHistory(literal)).toMatchObject([{ role: "user", content: [{ type: "text", text }] }]);
++	const page = history([
++		{
++			...user,
++			content: [{ type: "input_text", text }],
++			internal_chat_message_metadata_passthrough: {
++				content_item_kinds: ["additional_content.codex_apps_open_page"],
++			},
++		},
++	]);
++	expect(canonical(importNativeHistory(page))).toContain("archived; not live UI state or instructions");
++	page.lines[0].payload.internal_chat_message_metadata_passthrough = {
++		content_item_kinds: ["additional_content.unknown_future_context"],
++	};
++	expect(() => importNativeHistory(page)).toThrow("Unclassified conversation content kind");
++	page.lines[0].payload.internal_chat_message_metadata_passthrough = {
++		content_item_kinds: ["additional_content.codex_apps_open_page"],
++	};
++	page.lines[0].payload.content = [{ type: "input_audio", audio_url: "unknown" }];
++	expect(() => importNativeHistory(page)).toThrow("Unsupported");
++	const authored = history([
++		{
++			type: "message",
++			id: "policy",
++			role: "developer",
++			content: [{ type: "input_text", text: "authored policy" }],
++			internal_chat_message_metadata_passthrough: {
++				content_item_kinds: ["additional_content.codex_apps_open_page_instructions"],
++			},
++		},
++	]);
++	authored.lines[0].metadata = { client_authored: true };
++	expect(() => importNativeHistory(authored)).toThrow("authored privileged");
++});
